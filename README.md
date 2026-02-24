@@ -39,6 +39,11 @@ uv venv
 uv sync --group dev
 ```
 
+4. Create your local environment file:
+```bash
+cp .env.example .env
+```
+
 ## How to run
 Show CLI help:
 ```bash
@@ -58,7 +63,7 @@ uv run flow-dictate run --backend stub --run-once --simulate-trigger --use-stub-
 
 Run one realtime cycle (microphone + OpenAI Realtime):
 ```bash
-export OPENAI_API_KEY="your_key_here"
+set -a && source .env && set +a
 uv run flow-dictate run --backend realtime --run-once --simulate-trigger --use-stub-hotkey
 ```
 
@@ -85,23 +90,31 @@ uv build
 ```
 
 ## Configuration
-Environment variables:
-- `OPENAI_API_KEY`: API key used by realtime backend (or whichever variable name you configure below).
-- `FLOW_DICTATE_BACKEND`: default backend (`stub` or `realtime`), default `stub`.
-- `FLOW_DICTATE_HOTKEY`: hotkey string, default `cmd+shift+space`.
-- `FLOW_DICTATE_SAMPLE_RATE_HZ`: integer sample rate, default `24000`.
-- `FLOW_DICTATE_CHANNELS`: integer channel count, default `1`.
-- `FLOW_DICTATE_AUDIO_INPUT_DEVICE`: optional microphone device id/name.
-- `FLOW_DICTATE_MAX_RECORD_SECONDS`: float max recording window, default `30.0`.
-- `FLOW_DICTATE_TRANSCRIPTION_MODEL`: transcription model id, default `gpt-4o-mini-transcribe`.
-- `FLOW_DICTATE_OPENAI_API_KEY_ENV`: env var name for API key lookup, default `OPENAI_API_KEY`.
-- `FLOW_DICTATE_REALTIME_WEBSOCKET_URL`: realtime websocket URL, default `wss://api.openai.com/v1/realtime`.
-- `FLOW_DICTATE_REALTIME_CONNECT_TIMEOUT_SECONDS`: websocket connect timeout, default `15.0`.
-- `FLOW_DICTATE_REALTIME_RESPONSE_TIMEOUT_SECONDS`: max wait for completed transcription event, default `30.0`.
-- `FLOW_DICTATE_OUTPUT_MODE`: output destination (`stdout`, `clipboard`, `active-app`), default `stdout`.
-- `FLOW_DICTATE_ACTIVE_APP_FALLBACK_TO_CLIPBOARD`: keep clipboard text when active-app paste fails, default `true`.
-- `FLOW_DICTATE_TEMP_AUDIO_DIR`: temp path, default `/tmp/flow-dictate`.
-- `FLOW_DICTATE_DAEMON_POLL_INTERVAL_SECONDS`: service loop poll delay, default `0.10`.
+Use `.env.example` as the source of truth for local configuration:
+```bash
+cp .env.example .env
+set -a && source .env && set +a
+```
+
+Important variables for most local runs:
+- `OPENAI_API_KEY`: required for realtime backend.
+- `FLOW_DICTATE_BACKEND`: runtime backend (`stub` or `realtime`).
+- `FLOW_DICTATE_OUTPUT_MODE`: destination (`stdout`, `clipboard`, `active-app`).
+- `FLOW_DICTATE_HOTKEY`: trigger hotkey (default `cmd+shift+space`).
+- `FLOW_DICTATE_TRANSCRIPTION_MODEL`: transcription model id.
+
+Additional supported variables:
+- `FLOW_DICTATE_SAMPLE_RATE_HZ` (default `24000`)
+- `FLOW_DICTATE_CHANNELS` (default `1`)
+- `FLOW_DICTATE_AUDIO_INPUT_DEVICE` (optional)
+- `FLOW_DICTATE_MAX_RECORD_SECONDS` (default `30.0`)
+- `FLOW_DICTATE_OPENAI_API_KEY_ENV` (default `OPENAI_API_KEY`)
+- `FLOW_DICTATE_REALTIME_WEBSOCKET_URL` (default `wss://api.openai.com/v1/realtime`)
+- `FLOW_DICTATE_REALTIME_CONNECT_TIMEOUT_SECONDS` (default `15.0`)
+- `FLOW_DICTATE_REALTIME_RESPONSE_TIMEOUT_SECONDS` (default `30.0`)
+- `FLOW_DICTATE_ACTIVE_APP_FALLBACK_TO_CLIPBOARD` (default `true`)
+- `FLOW_DICTATE_TEMP_AUDIO_DIR` (default `/tmp/flow-dictate`)
+- `FLOW_DICTATE_DAEMON_POLL_INTERVAL_SECONDS` (default `0.10`)
 
 ## Project structure
 ```text
@@ -111,6 +124,7 @@ Environment variables:
 │   ├── implementation-plan.md
 │   ├── research-notes.md
 │   └── testing-guide.md
+├── .env.example
 ├── src/flow_dictate/
 │   ├── __main__.py
 │   ├── audio.py
