@@ -5,10 +5,13 @@ description = "Scaffold for a macOS dictation daemon."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+  "numpy>=1.26.0",
   "pynput>=1.7.7",
   "pyobjc-framework-ApplicationServices>=11.0; sys_platform == 'darwin'",
   "pyobjc-framework-AVFoundation>=11.0; sys_platform == 'darwin'",
   "pyobjc-framework-Quartz>=11.0; sys_platform == 'darwin'",
+  "sounddevice>=0.4.6",
+  "websocket-client>=1.8.0",
 ]
 
 [project.scripts]

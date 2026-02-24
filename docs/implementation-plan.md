@@ -7,6 +7,20 @@ Ship an MVP for a **macOS-only** dictation CLI with:
 - Output to stdout, clipboard, or active app
 - Reliable permission checks and failure recovery
 
+## Current implementation status (February 24, 2026)
+- Foundation scaffold is complete (`pyproject`, package layout, CLI, service orchestration, tests).
+- macOS preflight and hotkey foundation is implemented:
+  - `flow-dictate doctor` permission checks
+  - global hotkey capture via `pynput`
+- Output routing is implemented:
+  - `stdout`
+  - `clipboard`
+  - `active-app` with clipboard fallback
+- Realtime backend prototype is implemented:
+  - microphone capture (`MicrophoneAudioCapture`)
+  - OpenAI Realtime transcription over websocket (`OpenAIRealtimeTranscriptionClient`)
+- Stub backend remains available for deterministic local development and CI tests.
+
 ## 2) Assumptions and Constraints
 - Python project managed with `uv`.
 - OpenAI API is the initial backend.
@@ -117,24 +131,23 @@ Suggested integration order:
 
 Example commands:
 ```bash
-uv run pytest
-uv run pytest -k "transcript or output"
+uv run --group dev pytest
 uv run flow-dictate doctor
-uv run flow-dictate dictate --ptt --output stdout
+uv run flow-dictate run --backend stub --run-once --simulate-trigger --use-stub-hotkey
+uv run flow-dictate run --backend realtime --run-once --simulate-trigger --use-stub-hotkey
 ```
 
 ## 7) Risks and Mitigations
 | Risk | Impact | Mitigation |
 |---|---|---|
 | macOS permission complexity | Feature appears broken to users | Preflight checks + explicit setup docs |
-| API latency variability | Poor real-time experience | Stream partials early; make rewrite optional |
-| Hotkey conflicts / event tap instability | Inconsistent recording start/stop | Configurable hotkey + fallback CLI mode |
+| API latency variability | Poor real-time experience | Stream partials early; keep stub mode for local reliability |
+| Hotkey conflicts / event tap instability | Inconsistent recording start/stop | Configurable hotkey + fallback stub mode |
 | Regression in merge logic | Corrupted transcript output | Golden tests with varied speech patterns |
 
 ## 8) Definition of Done (MVP)
 - Fresh setup works with documented `uv` commands.
 - Dictation works end-to-end on macOS with streaming feedback.
-- Rewrite can be enabled/disabled via CLI flag.
 - Output works for stdout and clipboard; active-app path has permission-aware fallback.
 - Tests pass locally and in CI.
 - Architecture and implementation docs are current and contributor-friendly.

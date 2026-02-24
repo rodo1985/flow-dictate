@@ -1,78 +1,107 @@
 # flow-dictate
 
 ## What this repo is
-`flow-dictate` is a macOS-first Python project to build a lightweight "speak to type anywhere" tool.
-The goal is a personal, terminal-installed dictation daemon inspired by Wispr Flow / WhisperFlow behavior:
-hold a hotkey, speak, transcribe with OpenAI models, and inject text into your active app.
-This repository is currently in scaffold + architecture phase, with interfaces and tests ready for implementation.
+`flow-dictate` is a macOS-first Python project for a lightweight "speak to type anywhere" workflow.
+It combines global hotkey capture, microphone recording, transcription, and text insertion in one CLI.
+The codebase now includes both deterministic stub backends for local development and a realtime OpenAI path for end-to-end dictation.
 
-## Key features and scope
-- macOS-only target (no Windows/Linux support planned for MVP).
-- Python + `uv` workflow for dependency and command management.
-- CLI-first architecture (no full desktop GUI planned for MVP).
-- Modular design for hotkey capture, audio capture, transcription, and text injection.
-- Current scaffold includes stub implementations and orchestration tests.
+## Key features / scope
+- macOS-only target for MVP (global hotkeys, permissions, and active-app insertion are macOS-specific).
+- Python + `uv` for environment and dependency management.
+- CLI-first workflow with two commands: `run` and `doctor`.
+- Runtime backends:
+  - `stub`: deterministic local runs and tests.
+  - `realtime`: microphone capture + OpenAI Realtime transcription.
+- Output modes:
+  - `stdout`
+  - `clipboard`
+  - `active-app` (Command+V automation with clipboard fallback support)
+- Permission preflight checks for Microphone, Accessibility, and Input Monitoring.
 
-Out of scope for MVP right now:
+Out of scope for MVP:
 - Cross-platform support.
 - Multi-user cloud profiles.
-- Full settings GUI.
+- Full desktop settings GUI.
 
 ## Setup
-1. Install `uv` (if not already installed):
+1. Install `uv` (macOS):
 ```bash
 brew install uv
 ```
 
-2. Create and activate the project environment:
+2. Create a virtual environment:
 ```bash
 uv venv
 ```
 
-3. Sync dependencies:
+3. Sync dependencies (runtime + dev group):
 ```bash
 uv sync --group dev
 ```
 
 ## How to run
-Development and exploration:
+Show CLI help:
 ```bash
 uv run flow-dictate --help
-uv run flow-dictate doctor
-uv run flow-dictate run --run-once --simulate-trigger
-uv run python -m flow_dictate run --run-once --simulate-trigger
 ```
 
-Tests:
+Run permission preflight:
+```bash
+uv run flow-dictate doctor
+uv run flow-dictate doctor --prompt-permissions
+```
+
+Run one dry cycle with stub backend:
+```bash
+uv run flow-dictate run --backend stub --run-once --simulate-trigger --use-stub-hotkey
+```
+
+Run one realtime cycle (microphone + OpenAI Realtime):
+```bash
+export OPENAI_API_KEY="your_key_here"
+uv run flow-dictate run --backend realtime --run-once --simulate-trigger --use-stub-hotkey
+```
+
+Choose output mode:
+```bash
+uv run flow-dictate run --backend stub --run-once --simulate-trigger --output stdout
+uv run flow-dictate run --backend stub --run-once --simulate-trigger --output clipboard
+uv run flow-dictate run --backend stub --run-once --simulate-trigger --output active-app
+```
+
+Run tests:
 ```bash
 uv run --group dev pytest
 ```
 
-Lint:
+Run lint checks:
 ```bash
 uv run --group dev ruff check .
 ```
 
-Build package:
+Build the package:
 ```bash
 uv build
 ```
 
 ## Configuration
-Environment variables (current scaffold):
-- `OPENAI_API_KEY`: your OpenAI API key (required once real API client is enabled).
+Environment variables:
+- `OPENAI_API_KEY`: API key used by realtime backend (or whichever variable name you configure below).
+- `FLOW_DICTATE_BACKEND`: default backend (`stub` or `realtime`), default `stub`.
 - `FLOW_DICTATE_HOTKEY`: hotkey string, default `cmd+shift+space`.
-- `FLOW_DICTATE_SAMPLE_RATE_HZ`: integer sample rate, default `16000`.
-- `FLOW_DICTATE_CHANNELS`: integer channels count, default `1`.
+- `FLOW_DICTATE_SAMPLE_RATE_HZ`: integer sample rate, default `24000`.
+- `FLOW_DICTATE_CHANNELS`: integer channel count, default `1`.
+- `FLOW_DICTATE_AUDIO_INPUT_DEVICE`: optional microphone device id/name.
 - `FLOW_DICTATE_MAX_RECORD_SECONDS`: float max recording window, default `30.0`.
-- `FLOW_DICTATE_TRANSCRIPTION_MODEL`: model id, default `gpt-4o-mini-transcribe`.
+- `FLOW_DICTATE_TRANSCRIPTION_MODEL`: transcription model id, default `gpt-4o-mini-transcribe`.
 - `FLOW_DICTATE_OPENAI_API_KEY_ENV`: env var name for API key lookup, default `OPENAI_API_KEY`.
+- `FLOW_DICTATE_REALTIME_WEBSOCKET_URL`: realtime websocket URL, default `wss://api.openai.com/v1/realtime`.
+- `FLOW_DICTATE_REALTIME_CONNECT_TIMEOUT_SECONDS`: websocket connect timeout, default `15.0`.
+- `FLOW_DICTATE_REALTIME_RESPONSE_TIMEOUT_SECONDS`: max wait for completed transcription event, default `30.0`.
+- `FLOW_DICTATE_OUTPUT_MODE`: output destination (`stdout`, `clipboard`, `active-app`), default `stdout`.
+- `FLOW_DICTATE_ACTIVE_APP_FALLBACK_TO_CLIPBOARD`: keep clipboard text when active-app paste fails, default `true`.
 - `FLOW_DICTATE_TEMP_AUDIO_DIR`: temp path, default `/tmp/flow-dictate`.
-- `FLOW_DICTATE_DAEMON_POLL_INTERVAL_SECONDS`: loop poll delay, default `0.10`.
-
-Permission preflight:
-- `uv run flow-dictate doctor` checks Microphone, Accessibility, and Input Monitoring.
-- `uv run flow-dictate doctor --prompt-permissions` may trigger macOS permission prompts where supported.
+- `FLOW_DICTATE_DAEMON_POLL_INTERVAL_SECONDS`: service loop poll delay, default `0.10`.
 
 ## Project structure
 ```text
@@ -80,30 +109,37 @@ Permission preflight:
 ├── docs/
 │   ├── architecture.md
 │   ├── implementation-plan.md
-│   └── research-notes.md
+│   ├── research-notes.md
+│   └── testing-guide.md
 ├── src/flow_dictate/
+│   ├── __main__.py
+│   ├── audio.py
 │   ├── cli.py
 │   ├── config.py
-│   ├── interfaces.py
-│   ├── service.py
 │   ├── hotkey.py
-│   ├── audio.py
-│   ├── transcription.py
 │   ├── injector.py
-│   └── permissions.py
+│   ├── interfaces.py
+│   ├── permissions.py
+│   ├── service.py
+│   └── transcription.py
 ├── tests/
+│   ├── test_audio.py
 │   ├── test_config.py
 │   ├── test_hotkey.py
+│   ├── test_injector.py
 │   ├── test_permissions.py
-│   └── test_service.py
-└── pyproject.toml
+│   ├── test_service.py
+│   └── test_transcription.py
+├── pyproject.toml
+└── uv.lock
 ```
 
-## Contributing and development notes
-- Keep code straightforward and typed.
+## Contributing / development notes
+- Keep functions small and explicit.
 - Add docstrings for every new/changed function, method, and class.
-- Add tests for behavior changes.
-- Keep docs updated with each workflow/configuration change:
-  - [docs/architecture.md](docs/architecture.md)
-  - [docs/implementation-plan.md](docs/implementation-plan.md)
-  - [docs/research-notes.md](docs/research-notes.md)
+- Add inline comments for non-obvious logic and tradeoffs.
+- Add or update tests for behavior changes.
+- Keep docs in sync with code changes:
+  - `README.md`
+  - `docs/implementation-plan.md`
+  - `docs/testing-guide.md`
