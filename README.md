@@ -38,8 +38,9 @@ uv sync --group dev
 Development and exploration:
 ```bash
 uv run flow-dictate --help
-uv run flow-dictate --run-once --simulate-trigger
-uv run python -m flow_dictate --run-once --simulate-trigger
+uv run flow-dictate doctor
+uv run flow-dictate run --run-once --simulate-trigger
+uv run python -m flow_dictate run --run-once --simulate-trigger
 ```
 
 Tests:
@@ -69,6 +70,10 @@ Environment variables (current scaffold):
 - `FLOW_DICTATE_TEMP_AUDIO_DIR`: temp path, default `/tmp/flow-dictate`.
 - `FLOW_DICTATE_DAEMON_POLL_INTERVAL_SECONDS`: loop poll delay, default `0.10`.
 
+Permission preflight:
+- `uv run flow-dictate doctor` checks Microphone, Accessibility, and Input Monitoring.
+- `uv run flow-dictate doctor --prompt-permissions` may trigger macOS permission prompts where supported.
+
 ## Project structure
 ```text
 .
@@ -84,9 +89,12 @@ Environment variables (current scaffold):
 │   ├── hotkey.py
 │   ├── audio.py
 │   ├── transcription.py
-│   └── injector.py
+│   ├── injector.py
+│   └── permissions.py
 ├── tests/
 │   ├── test_config.py
+│   ├── test_hotkey.py
+│   ├── test_permissions.py
 │   └── test_service.py
 └── pyproject.toml
 ```
