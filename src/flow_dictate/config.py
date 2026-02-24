@@ -8,7 +8,60 @@ from pathlib import Path
 from typing import Mapping
 
 VALID_OUTPUT_MODES: tuple[str, ...] = ("stdout", "clipboard", "active-app")
-VALID_BACKENDS: tuple[str, ...] = ("stub", "realtime")
+VALID_BACKENDS: tuple[str, ...] = ("stub", "api", "realtime")
+
+
+def _load_dotenv_values(path: Path) -> dict[str, str]:
+    """Load simple ``KEY=VALUE`` pairs from a dotenv file.
+
+    Parameters:
+        path: Path to the dotenv file.
+
+    Returns:
+        dict[str, str]: Parsed environment values.
+
+    Raises:
+        RuntimeError: If dotenv content cannot be read.
+
+    Example:
+        ``values = _load_dotenv_values(Path(".env"))``
+    """
+
+    if not path.exists():
+        return {}
+
+    try:
+        content = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise RuntimeError(f"Unable to read dotenv file at {path}.") from exc
+
+    parsed: dict[str, str] = {}
+    for line in content.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+
+        if stripped.startswith("export "):
+            stripped = stripped[len("export ") :].strip()
+
+        if "=" not in stripped:
+            continue
+
+        key, raw_value = stripped.split("=", 1)
+        normalized_key = key.strip()
+        if not normalized_key:
+            continue
+
+        value = raw_value.strip()
+        if (
+            len(value) >= 2
+            and ((value[0] == value[-1] == '"') or (value[0] == value[-1] == "'"))
+        ):
+            value = value[1:-1]
+
+        parsed[normalized_key] = value
+
+    return parsed
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,13 +78,14 @@ class AppConfig:
         openai_api_key_env: Environment variable name that stores the OpenAI API key.
         realtime_websocket_url: Base websocket URL used for OpenAI Realtime sessions.
         realtime_connect_timeout_seconds: Connection timeout for realtime websocket setup.
-        realtime_response_timeout_seconds: Max wait time for a completed transcription event.
+        realtime_response_timeout_seconds: Max wait time for transcription responses
+            in realtime mode and HTTP transcription requests.
         temporary_audio_dir: Directory where temporary audio artifacts may be written.
         daemon_poll_interval_seconds: Poll interval used by the orchestrator loop.
         output_mode: Injector strategy for delivering text output.
         active_app_fallback_to_clipboard: Whether active-app mode should keep clipboard output
             when auto-paste fails.
-        backend: Runtime backend strategy (``stub`` or ``realtime``).
+        backend: Runtime backend strategy (``stub``, ``api``, or ``realtime``).
 
     Returns:
         AppConfig: An immutable configuration object.
@@ -107,6 +161,8 @@ class AppConfig:
 
         Parameters:
             environ: Optional mapping to use instead of ``os.environ`` for lookups.
+                When omitted, values are loaded from ``.env`` in the current
+                working directory and then overridden by process environment.
 
         Returns:
             AppConfig: Parsed config with defaults applied for missing keys.
@@ -120,7 +176,13 @@ class AppConfig:
             2
         """
 
-        env = environ if environ is not None else os.environ
+        if environ is None:
+            env: Mapping[str, str] = {
+                **_load_dotenv_values(Path.cwd() / ".env"),
+                **os.environ,
+            }
+        else:
+            env = environ
         defaults = cls()
 
         # Empty strings are treated as "not configured" so defaults continue to work.

@@ -26,6 +26,15 @@ Expected behavior:
 - Exit code `0` when all required permissions are granted.
 - Exit code `1` when one or more permissions still need action.
 
+## Interactive hotkey setup
+```bash
+uv run flow-dictate hotkey-setup
+```
+
+Expected behavior:
+- CLI prompts for a key chord.
+- Releasing the keys writes `FLOW_DICTATE_HOTKEY=...` to `.env`.
+
 ## Stub backend run (deterministic)
 ```bash
 uv run flow-dictate run --backend stub --run-once --simulate-trigger --use-stub-hotkey
@@ -63,33 +72,45 @@ Expected behavior:
 - If permissions allow automation: text is pasted in the active app.
 - If paste automation fails: text remains in clipboard and warning is shown.
 
-## 4) Realtime backend verification
+## 4) API backend verification
 
 ## Preconditions
 - macOS microphone permission granted for the terminal app.
-- OpenAI API key available in `OPENAI_API_KEY` (or custom env var configured via `FLOW_DICTATE_OPENAI_API_KEY_ENV`).
+- OpenAI API key present in `.env` as `OPENAI_API_KEY` (or custom env var configured via `FLOW_DICTATE_OPENAI_API_KEY_ENV`).
 
-## Run one realtime cycle
+## Run API hold-to-record flow
 ```bash
-export OPENAI_API_KEY="your_key_here"
-uv run flow-dictate run --backend realtime --run-once --simulate-trigger --use-stub-hotkey --output stdout
+uv run flow-dictate run --backend api --output stdout
 ```
 
 Expected behavior:
-- Microphone capture starts and stops for one cycle.
-- A transcript is returned from OpenAI Realtime and printed to stdout.
+- Press and hold the configured hotkey to begin recording.
+- Terminal shows a "Recording..." indicator while key is held.
+- Releasing the hotkey stops recording.
+- A transcript is returned from OpenAI Audio API and printed to stdout.
 
 ## 5) Environment-variable checks
 
 ## Backend and output defaults from env
 ```bash
-export FLOW_DICTATE_BACKEND=realtime
-export FLOW_DICTATE_OUTPUT_MODE=clipboard
+cat <<'EOF' > .env
+FLOW_DICTATE_BACKEND=stub
+FLOW_DICTATE_OUTPUT_MODE=clipboard
+EOF
 uv run flow-dictate run --run-once --simulate-trigger --use-stub-hotkey
 ```
 
 Expected behavior:
-- CLI uses env defaults when `--backend` and `--output` are omitted.
+- CLI uses `.env` defaults when `--backend` and `--output` are omitted.
+
+## Optional realtime verification
+```bash
+uv run flow-dictate run --backend realtime --output stdout
+```
+
+Expected behavior:
+- Same hold-to-record UX as API backend.
+- If the selected model is unsupported in realtime mode, the command exits with a startup or runtime error.
 
 ## 6) Useful failure signatures
 - `flow-dictate startup error: ... OPENAI_API_KEY ... required`: set API key or use `--backend stub`.

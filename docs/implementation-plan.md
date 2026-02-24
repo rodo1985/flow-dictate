@@ -134,6 +134,7 @@ Example commands:
 uv run --group dev pytest
 uv run flow-dictate doctor
 uv run flow-dictate run --backend stub --run-once --simulate-trigger --use-stub-hotkey
+uv run flow-dictate run --backend api --run-once --simulate-trigger --use-stub-hotkey
 uv run flow-dictate run --backend realtime --run-once --simulate-trigger --use-stub-hotkey
 ```
 

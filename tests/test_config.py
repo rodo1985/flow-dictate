@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Any
+
 import pytest
 
 from flow_dictate.config import AppConfig
@@ -145,9 +148,11 @@ def test_from_env_parses_backend_setting() -> None:
         ``pytest -k test_from_env_parses_backend_setting``
     """
 
-    config = AppConfig.from_env({"FLOW_DICTATE_BACKEND": "realtime"})
+    realtime_config = AppConfig.from_env({"FLOW_DICTATE_BACKEND": "realtime"})
+    api_config = AppConfig.from_env({"FLOW_DICTATE_BACKEND": "api"})
 
-    assert config.backend == "realtime"
+    assert realtime_config.backend == "realtime"
+    assert api_config.backend == "api"
 
 
 def test_from_env_rejects_invalid_backend_setting() -> None:
@@ -168,3 +173,60 @@ def test_from_env_rejects_invalid_backend_setting() -> None:
 
     with pytest.raises(ValueError, match="FLOW_DICTATE_BACKEND"):
         AppConfig.from_env({"FLOW_DICTATE_BACKEND": "unsupported"})
+
+
+def test_from_env_loads_dotenv_from_cwd(monkeypatch: Any, tmp_path: Path) -> None:
+    """Verify ``from_env`` reads ``.env`` when no explicit mapping is provided.
+
+    Parameters:
+        monkeypatch: Pytest monkeypatch fixture.
+        tmp_path: Temporary directory fixture.
+
+    Returns:
+        None.
+
+    Raises:
+        AssertionError: If dotenv-backed values are not loaded.
+
+    Example:
+        ``pytest -k test_from_env_loads_dotenv_from_cwd``
+    """
+
+    dotenv_path = tmp_path / ".env"
+    dotenv_path.write_text("FLOW_DICTATE_BACKEND=realtime\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("FLOW_DICTATE_BACKEND", raising=False)
+
+    config = AppConfig.from_env()
+
+    assert config.backend == "realtime"
+
+
+def test_from_env_prefers_process_env_over_dotenv(
+    monkeypatch: Any,
+    tmp_path: Path,
+) -> None:
+    """Verify process environment values override values loaded from ``.env``.
+
+    Parameters:
+        monkeypatch: Pytest monkeypatch fixture.
+        tmp_path: Temporary directory fixture.
+
+    Returns:
+        None.
+
+    Raises:
+        AssertionError: If process env precedence regresses.
+
+    Example:
+        ``pytest -k test_from_env_prefers_process_env_over_dotenv``
+    """
+
+    dotenv_path = tmp_path / ".env"
+    dotenv_path.write_text("FLOW_DICTATE_OUTPUT_MODE=stdout\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("FLOW_DICTATE_OUTPUT_MODE", "clipboard")
+
+    config = AppConfig.from_env()
+
+    assert config.output_mode == "clipboard"

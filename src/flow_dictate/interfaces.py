@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Callable, Protocol
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +75,23 @@ class HotkeyCapture(Protocol):
         """
         ...
 
+    def is_pressed(self) -> bool:
+        """Return whether the configured hotkey is currently held down.
+
+        Parameters:
+            None.
+
+        Returns:
+            bool: ``True`` when all required hotkey keys are actively pressed.
+
+        Raises:
+            RuntimeError: Implementations may raise for backend listener failures.
+
+        Example:
+            ``listener.is_pressed()``
+        """
+        ...
+
 
 class AudioCapture(Protocol):
     """Define behavior for acquiring microphone audio data."""
@@ -93,6 +110,30 @@ class AudioCapture(Protocol):
 
         Example:
             ``audio_capture.record(max_seconds=5.0)``
+        """
+        ...
+
+    def record_while_pressed(
+        self,
+        is_pressed: Callable[[], bool],
+        max_seconds: float,
+        poll_interval_seconds: float = 0.01,
+    ) -> AudioChunk:
+        """Capture audio while a hotkey remains pressed.
+
+        Parameters:
+            is_pressed: Callable returning whether the hotkey is still held.
+            max_seconds: Hard cap for one recording in seconds.
+            poll_interval_seconds: Poll interval for checking key-release state.
+
+        Returns:
+            AudioChunk: Captured audio payload and metadata.
+
+        Raises:
+            RuntimeError: Implementations may raise for device or OS failures.
+
+        Example:
+            ``audio_capture.record_while_pressed(is_pressed=listener.is_pressed, max_seconds=30.0)``
         """
         ...
 

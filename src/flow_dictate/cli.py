@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
+import re
 import sys
-from typing import Sequence
+from typing import Sequence, TextIO
 
 from flow_dictate.audio import MicrophoneAudioCapture, StubAudioCapture
 from flow_dictate.config import AppConfig, VALID_BACKENDS, VALID_OUTPUT_MODES
-from flow_dictate.hotkey import MacOSGlobalHotkeyCapture, StubHotkeyCapture
+from flow_dictate.hotkey import (
+    MacOSGlobalHotkeyCapture,
+    StubHotkeyCapture,
+    capture_hotkey_expression,
+)
 from flow_dictate.injector import (
     ClipboardTextInjector,
     MacOSActiveAppTextInjector,
@@ -18,6 +24,7 @@ from flow_dictate.interfaces import AudioCapture, TextInjector, TranscriptionCli
 from flow_dictate.permissions import format_preflight_report, run_permission_preflight
 from flow_dictate.service import DictationService
 from flow_dictate.transcription import (
+    OpenAIAudioTranscriptionClient,
     OpenAIRealtimeTranscriptionClient,
     StubOpenAITranscriptionClient,
 )
@@ -48,6 +55,177 @@ def _positive_int(value: str) -> int:
         raise argparse.ArgumentTypeError("Expected a value greater than 0.")
 
     return parsed
+
+
+def _positive_float(value: str) -> float:
+    """Parse a positive float for argparse options.
+
+    Parameters:
+        value: Raw CLI argument value.
+
+    Returns:
+        float: Parsed positive float.
+
+    Raises:
+        argparse.ArgumentTypeError: If value is not a positive float.
+
+    Example:
+        ``_positive_float("1.5")``
+    """
+
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("Expected a float value.") from exc
+
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("Expected a value greater than 0.")
+
+    return parsed
+
+
+def _upsert_env_variable(env_file: Path, key: str, value: str) -> None:
+    """Create or update an environment variable entry in a dotenv file.
+
+    Parameters:
+        env_file: Path to dotenv file that should be updated.
+        key: Environment variable key to write.
+        value: Variable value to persist.
+
+    Returns:
+        None.
+
+    Raises:
+        RuntimeError: If the dotenv file cannot be read or written.
+        ValueError: If key is empty.
+
+    Example:
+        ``_upsert_env_variable(Path(".env"), "FLOW_DICTATE_HOTKEY", "ctrl+cmd")``
+    """
+
+    if not key.strip():
+        raise ValueError("key must not be empty.")
+
+    existing_lines: list[str] = []
+    if env_file.exists():
+        try:
+            existing_lines = env_file.read_text(encoding="utf-8").splitlines()
+        except OSError as exc:
+            raise RuntimeError(f"Unable to read dotenv file at {env_file}.") from exc
+
+    pattern = re.compile(rf"^\s*{re.escape(key)}\s*=")
+    replacement_line = f"{key}={value}"
+    updated_lines: list[str] = []
+    replaced = False
+
+    for line in existing_lines:
+        if not replaced and pattern.match(line):
+            updated_lines.append(replacement_line)
+            replaced = True
+            continue
+        updated_lines.append(line)
+
+    if not replaced:
+        if updated_lines and updated_lines[-1].strip():
+            updated_lines.append("")
+        updated_lines.append(replacement_line)
+
+    content = "\n".join(updated_lines).rstrip() + "\n"
+    try:
+        env_file.write_text(content, encoding="utf-8")
+    except OSError as exc:
+        raise RuntimeError(f"Unable to write dotenv file at {env_file}.") from exc
+
+
+class _ConsoleRecordingIndicator:
+    """Render recording status messages in terminal output.
+
+    Parameters:
+        stream: Output stream used for status text.
+
+    Returns:
+        _ConsoleRecordingIndicator: Stream-backed status renderer.
+
+    Raises:
+        None.
+
+    Example:
+        ``indicator = _ConsoleRecordingIndicator(stream=sys.stderr)``
+    """
+
+    def __init__(self, stream: TextIO | None = None) -> None:
+        """Initialize indicator state.
+
+        Parameters:
+            stream: Optional target stream; defaults to ``sys.stderr``.
+
+        Returns:
+            None.
+
+        Raises:
+            None.
+
+        Example:
+            ``_ConsoleRecordingIndicator()``
+        """
+
+        self._stream = stream if stream is not None else sys.stderr
+        self._active = False
+
+    def start(self) -> None:
+        """Print a terminal message indicating recording has started.
+
+        Parameters:
+            None.
+
+        Returns:
+            None.
+
+        Raises:
+            None.
+
+        Example:
+            ``indicator.start()``
+        """
+
+        if self._active:
+            return
+
+        self._active = True
+        print(
+            "flow-dictate: Recording... release hotkey to stop.",
+            file=self._stream,
+            flush=True,
+        )
+
+    def stop(self, elapsed_seconds: float) -> None:
+        """Stop updates and print final capture + transcription status.
+
+        Parameters:
+            elapsed_seconds: Total recording duration in seconds.
+
+        Returns:
+            None.
+
+        Raises:
+            None.
+
+        Example:
+            ``indicator.stop(elapsed_seconds=2.4)``
+        """
+
+        if not self._active:
+            return
+
+        self._active = False
+        print(
+            (
+                "flow-dictate: Recording stopped after "
+                f"{elapsed_seconds:.2f}s. Transcribing..."
+            ),
+            file=self._stream,
+            flush=True,
+        )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -126,6 +304,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Allow macOS permission prompts where supported.",
     )
 
+    hotkey_setup_parser = subparsers.add_parser(
+        "hotkey-setup",
+        help="Capture a hotkey chord from keyboard input and save it to .env.",
+    )
+    hotkey_setup_parser.add_argument(
+        "--env-file",
+        type=Path,
+        default=Path(".env"),
+        help="Dotenv file to update (default: ./.env).",
+    )
+    hotkey_setup_parser.add_argument(
+        "--timeout-seconds",
+        type=_positive_float,
+        default=15.0,
+        help="Maximum wait for key press/release while capturing hotkey.",
+    )
+
     return parser
 
 
@@ -169,14 +364,14 @@ def _build_audio_and_transcription(
 
     Parameters:
         config: Runtime configuration object.
-        backend: Backend mode (``stub`` or ``realtime``).
+        backend: Backend mode (``stub``, ``api``, or ``realtime``).
 
     Returns:
         tuple[AudioCapture, TranscriptionClient]: Configured backend pair.
 
     Raises:
         ValueError: If backend is unsupported.
-        RuntimeError: If realtime dependencies are unavailable.
+        RuntimeError: If backend dependencies are unavailable.
 
     Example:
         ``audio, transcriber = _build_audio_and_transcription(config, backend="stub")``
@@ -201,8 +396,45 @@ def _build_audio_and_transcription(
             OpenAIRealtimeTranscriptionClient.from_config(config=config),
         )
 
+    if backend == "api":
+        return (
+            MicrophoneAudioCapture(
+                sample_rate_hz=config.sample_rate_hz,
+                channels=config.channels,
+                device=config.audio_input_device,
+            ),
+            OpenAIAudioTranscriptionClient.from_config(config=config),
+        )
+
     valid_backends = ", ".join(VALID_BACKENDS)
     raise ValueError(f"Unsupported backend: {backend}. Valid backends: {valid_backends}.")
+
+
+def _run_hotkey_setup(env_file: Path, timeout_seconds: float) -> int:
+    """Capture a hotkey chord and persist it to a dotenv file.
+
+    Parameters:
+        env_file: Dotenv file path where hotkey should be stored.
+        timeout_seconds: Maximum wait for interactive key capture.
+
+    Returns:
+        int: CLI process exit code.
+
+    Raises:
+        RuntimeError: If hotkey capture or dotenv write fails.
+
+    Example:
+        ``_run_hotkey_setup(env_file=Path(".env"), timeout_seconds=15.0)``
+    """
+
+    print(
+        "flow-dictate: Press your desired hotkey combination now, "
+        "then release all keys to save it."
+    )
+    captured_hotkey = capture_hotkey_expression(timeout_seconds=timeout_seconds)
+    _upsert_env_variable(env_file=env_file, key="FLOW_DICTATE_HOTKEY", value=captured_hotkey)
+    print(f"flow-dictate: Saved FLOW_DICTATE_HOTKEY={captured_hotkey} to {env_file}.")
+    return 0
 
 
 def build_default_service(
@@ -211,6 +443,7 @@ def build_default_service(
     use_stub_hotkey: bool = False,
     backend: str | None = None,
     output_mode: str | None = None,
+    recording_indicator: _ConsoleRecordingIndicator | None = None,
 ) -> DictationService:
     """Create a default orchestrator using configured runtime implementations.
 
@@ -220,6 +453,7 @@ def build_default_service(
         use_stub_hotkey: Whether to force stub hotkey behavior.
         backend: Optional backend mode override.
         output_mode: Optional output destination override.
+        recording_indicator: Optional terminal indicator for active recording.
 
     Returns:
         DictationService: Service wired with selected runtime components.
@@ -252,6 +486,12 @@ def build_default_service(
         audio_capture=audio_capture,
         transcription_client=transcription_client,
         text_injector=text_injector,
+        on_recording_started=(
+            recording_indicator.start if recording_indicator is not None else None
+        ),
+        on_recording_stopped=(
+            recording_indicator.stop if recording_indicator is not None else None
+        ),
     )
 
 
@@ -279,18 +519,30 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(format_preflight_report(report))
         return 0 if report.all_required_granted else 1
 
+    if args.command == "hotkey-setup":
+        try:
+            return _run_hotkey_setup(
+                env_file=args.env_file,
+                timeout_seconds=args.timeout_seconds,
+            )
+        except (RuntimeError, ValueError) as exc:
+            print(f"flow-dictate hotkey setup error: {exc}", file=sys.stderr)
+            return 2
+
     if args.command is None:
         parser.print_help()
         return 0
 
     try:
         config = AppConfig.from_env()
+        recording_indicator = _ConsoleRecordingIndicator()
         service = build_default_service(
             config=config,
             simulate_trigger=args.simulate_trigger,
             use_stub_hotkey=args.use_stub_hotkey,
             backend=args.backend,
             output_mode=args.output,
+            recording_indicator=recording_indicator,
         )
     except (RuntimeError, ValueError) as exc:
         print(
@@ -301,9 +553,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 2
 
-    if args.run_once:
-        service.run_once(timeout_seconds=0.0)
-        return 0
+    try:
+        if args.run_once:
+            service.run_once(timeout_seconds=0.0)
+            return 0
 
-    service.run_forever(max_iterations=args.max_iterations)
-    return 0
+        service.run_forever(max_iterations=args.max_iterations)
+        return 0
+    except (RuntimeError, ValueError) as exc:
+        print(f"flow-dictate runtime error: {exc}", file=sys.stderr)
+        if "realtime mode" in str(exc).lower():
+            print(
+                "Hint: use `flow-dictate run --backend api` for non-realtime transcription.",
+                file=sys.stderr,
+            )
+        return 3

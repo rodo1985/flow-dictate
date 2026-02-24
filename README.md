@@ -3,15 +3,20 @@
 ## What this repo is
 `flow-dictate` is a macOS-first Python project for a lightweight "speak to type anywhere" workflow.
 It combines global hotkey capture, microphone recording, transcription, and text insertion in one CLI.
-The codebase now includes both deterministic stub backends for local development and a realtime OpenAI path for end-to-end dictation.
+The codebase now includes deterministic local stubs, OpenAI Audio API transcription, and an optional OpenAI Realtime backend.
 
 ## Key features / scope
 - macOS-only target for MVP (global hotkeys, permissions, and active-app insertion are macOS-specific).
 - Python + `uv` for environment and dependency management.
-- CLI-first workflow with two commands: `run` and `doctor`.
+- CLI-first workflow with three commands: `run`, `doctor`, and `hotkey-setup`.
 - Runtime backends:
   - `stub`: deterministic local runs and tests.
-  - `realtime`: microphone capture + OpenAI Realtime transcription.
+  - `api`: microphone capture + OpenAI `/audio/transcriptions` upload (recommended).
+  - `realtime`: optional websocket transcription mode.
+- Hold-to-record behavior:
+  - press and hold the configured hotkey to record
+  - release the hotkey to stop recording and trigger transcription
+  - terminal recording indicator shows start/stop recording status
 - Output modes:
   - `stdout`
   - `clipboard`
@@ -44,6 +49,11 @@ uv sync --group dev
 cp .env.example .env
 ```
 
+5. (Optional) Capture your preferred hotkey directly from keyboard:
+```bash
+uv run flow-dictate hotkey-setup
+```
+
 ## How to run
 Show CLI help:
 ```bash
@@ -61,17 +71,26 @@ Run one dry cycle with stub backend:
 uv run flow-dictate run --backend stub --run-once --simulate-trigger --use-stub-hotkey
 ```
 
-Run one realtime cycle (microphone + OpenAI Realtime):
+Run API transcription mode (recommended):
 ```bash
-set -a && source .env && set +a
+uv run flow-dictate run --backend api
+```
+
+Run realtime mode (advanced):
+```bash
+uv run flow-dictate run --backend realtime
+```
+
+Run one realtime dry cycle without real hotkey capture (debug only):
+```bash
 uv run flow-dictate run --backend realtime --run-once --simulate-trigger --use-stub-hotkey
 ```
 
 Choose output mode:
 ```bash
-uv run flow-dictate run --backend stub --run-once --simulate-trigger --output stdout
-uv run flow-dictate run --backend stub --run-once --simulate-trigger --output clipboard
-uv run flow-dictate run --backend stub --run-once --simulate-trigger --output active-app
+uv run flow-dictate run --backend api --output stdout
+uv run flow-dictate run --backend api --output clipboard
+uv run flow-dictate run --backend api --output active-app
 ```
 
 Run tests:
@@ -93,15 +112,21 @@ uv build
 Use `.env.example` as the source of truth for local configuration:
 ```bash
 cp .env.example .env
-set -a && source .env && set +a
 ```
 
+`flow-dictate` automatically reads `.env` from the current working directory.
+
 Important variables for most local runs:
-- `OPENAI_API_KEY`: required for realtime backend.
-- `FLOW_DICTATE_BACKEND`: runtime backend (`stub` or `realtime`).
+- `OPENAI_API_KEY`: required for `api` and `realtime` backends.
+- `FLOW_DICTATE_BACKEND`: runtime backend (`stub`, `api`, or `realtime`).
 - `FLOW_DICTATE_OUTPUT_MODE`: destination (`stdout`, `clipboard`, `active-app`).
-- `FLOW_DICTATE_HOTKEY`: trigger hotkey (default `cmd+shift+space`).
+- `FLOW_DICTATE_HOTKEY`: global hotkey used for hold-to-record.
 - `FLOW_DICTATE_TRANSCRIPTION_MODEL`: transcription model id.
+
+Set hotkey interactively:
+```bash
+uv run flow-dictate hotkey-setup
+```
 
 Additional supported variables:
 - `FLOW_DICTATE_SAMPLE_RATE_HZ` (default `24000`)
@@ -111,7 +136,7 @@ Additional supported variables:
 - `FLOW_DICTATE_OPENAI_API_KEY_ENV` (default `OPENAI_API_KEY`)
 - `FLOW_DICTATE_REALTIME_WEBSOCKET_URL` (default `wss://api.openai.com/v1/realtime`)
 - `FLOW_DICTATE_REALTIME_CONNECT_TIMEOUT_SECONDS` (default `15.0`)
-- `FLOW_DICTATE_REALTIME_RESPONSE_TIMEOUT_SECONDS` (default `30.0`)
+- `FLOW_DICTATE_REALTIME_RESPONSE_TIMEOUT_SECONDS` (default `30.0`, also used as API transcription request timeout)
 - `FLOW_DICTATE_ACTIVE_APP_FALLBACK_TO_CLIPBOARD` (default `true`)
 - `FLOW_DICTATE_TEMP_AUDIO_DIR` (default `/tmp/flow-dictate`)
 - `FLOW_DICTATE_DAEMON_POLL_INTERVAL_SECONDS` (default `0.10`)
@@ -139,6 +164,7 @@ Additional supported variables:
 ├── tests/
 │   ├── test_audio.py
 │   ├── test_config.py
+│   ├── test_cli.py
 │   ├── test_hotkey.py
 │   ├── test_injector.py
 │   ├── test_permissions.py

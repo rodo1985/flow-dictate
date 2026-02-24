@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Callable
+
 from flow_dictate.config import AppConfig
 from flow_dictate.interfaces import AudioChunk
 from flow_dictate.service import DictationService
@@ -264,3 +266,230 @@ def test_run_once_skips_injection_for_blank_transcription() -> None:
     assert result.triggered is True
     assert result.transcription == ""
     assert result.injected is False
+
+
+class HoldAwareHotkey:
+    """Provide trigger and held-state behavior for hold-to-record tests.
+
+    Parameters:
+        held_sequence: Ordered held-state values consumed during polling.
+
+    Returns:
+        HoldAwareHotkey: Fake hotkey with deterministic hold semantics.
+
+    Raises:
+        None.
+
+    Example:
+        ``hotkey = HoldAwareHotkey([True, False])``
+    """
+
+    def __init__(self, held_sequence: list[bool]) -> None:
+        """Store held-state values for deterministic reads.
+
+        Parameters:
+            held_sequence: Ordered held-state values consumed one-by-one.
+
+        Returns:
+            None.
+
+        Raises:
+            None.
+
+        Example:
+            ``HoldAwareHotkey([True, False])``
+        """
+
+        self._held_sequence = held_sequence
+
+    def wait_for_trigger(self, timeout_seconds: float | None = None) -> bool:
+        """Always report a trigger for one-cycle hold-mode tests.
+
+        Parameters:
+            timeout_seconds: Unused in this fake implementation.
+
+        Returns:
+            bool: Always ``True``.
+
+        Raises:
+            None.
+
+        Example:
+            ``hotkey.wait_for_trigger(timeout_seconds=0.0)``
+        """
+
+        return True
+
+    def is_pressed(self) -> bool:
+        """Return the next held-state value, defaulting to ``False``.
+
+        Parameters:
+            None.
+
+        Returns:
+            bool: Next pre-seeded held value or ``False`` when exhausted.
+
+        Raises:
+            None.
+
+        Example:
+            ``hotkey.is_pressed()``
+        """
+
+        if self._held_sequence:
+            return self._held_sequence.pop(0)
+        return False
+
+
+class HoldAwareAudioCapture:
+    """Provide record-while-pressed behavior for service hold-mode tests.
+
+    Parameters:
+        None.
+
+    Returns:
+        HoldAwareAudioCapture: Fake capture implementation with call tracking.
+
+    Raises:
+        None.
+
+    Example:
+        ``audio = HoldAwareAudioCapture()``
+    """
+
+    def __init__(self) -> None:
+        """Initialize call tracking state for record methods.
+
+        Parameters:
+            None.
+
+        Returns:
+            None.
+
+        Raises:
+            None.
+
+        Example:
+            ``HoldAwareAudioCapture()``
+        """
+
+        self.record_called = False
+        self.record_while_pressed_called = False
+
+    def record(self, max_seconds: float) -> AudioChunk:
+        """Track legacy record usage and return deterministic payload.
+
+        Parameters:
+            max_seconds: Max recording duration requested by the service.
+
+        Returns:
+            AudioChunk: Fixed deterministic payload.
+
+        Raises:
+            None.
+
+        Example:
+            ``audio.record(max_seconds=5.0)``
+        """
+
+        del max_seconds
+        self.record_called = True
+        return AudioChunk(data=b"legacy", sample_rate_hz=24_000, channels=1)
+
+    def record_while_pressed(
+        self,
+        is_pressed: Callable[[], bool],
+        max_seconds: float,
+        poll_interval_seconds: float = 0.01,
+    ) -> AudioChunk:
+        """Track hold-mode usage and return deterministic payload.
+
+        Parameters:
+            is_pressed: Callable returning whether recording should continue.
+            max_seconds: Max recording duration requested by the service.
+            poll_interval_seconds: Poll interval from the service; unused here.
+
+        Returns:
+            AudioChunk: Fixed deterministic payload.
+
+        Raises:
+            None.
+
+        Example:
+            ``audio.record_while_pressed(is_pressed=hotkey.is_pressed, max_seconds=5.0)``
+        """
+
+        del max_seconds, poll_interval_seconds
+        self.record_while_pressed_called = True
+        _ = is_pressed()
+        _ = is_pressed()
+        return AudioChunk(data=b"hold-mode", sample_rate_hz=24_000, channels=1)
+
+
+def test_run_once_prefers_hold_to_record_path_when_available() -> None:
+    """Verify service uses ``record_while_pressed`` when capture supports it.
+
+    Parameters:
+        None.
+
+    Returns:
+        None.
+
+    Raises:
+        AssertionError: If hold-mode path selection regresses.
+
+    Example:
+        ``pytest -k test_run_once_prefers_hold_to_record_path_when_available``
+    """
+
+    audio = HoldAwareAudioCapture()
+    service = DictationService(
+        config=AppConfig(),
+        hotkey_capture=HoldAwareHotkey([True, False]),
+        audio_capture=audio,
+        transcription_client=FakeTranscriptionClient("hold transcript"),
+        text_injector=FakeTextInjector(),
+    )
+
+    result = service.run_once(timeout_seconds=0.0)
+
+    assert result.triggered is True
+    assert result.transcription == "hold transcript"
+    assert result.injected is True
+    assert audio.record_called is False
+    assert audio.record_while_pressed_called is True
+
+
+def test_run_once_emits_recording_callbacks() -> None:
+    """Verify recording start/stop callbacks are fired for one run cycle.
+
+    Parameters:
+        None.
+
+    Returns:
+        None.
+
+    Raises:
+        AssertionError: If callback invocation behavior regresses.
+
+    Example:
+        ``pytest -k test_run_once_emits_recording_callbacks``
+    """
+
+    events: list[str] = []
+    service = DictationService(
+        config=AppConfig(),
+        hotkey_capture=HoldAwareHotkey([True, False]),
+        audio_capture=HoldAwareAudioCapture(),
+        transcription_client=FakeTranscriptionClient("hello"),
+        text_injector=FakeTextInjector(),
+        on_recording_started=lambda: events.append("start"),
+        on_recording_stopped=lambda elapsed: events.append(
+            "stop" if elapsed >= 0 else "bad-stop"
+        ),
+    )
+
+    service.run_once(timeout_seconds=0.0)
+
+    assert events[0] == "start"
+    assert "stop" in events

@@ -3,9 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
+from typing import Callable
 
 from flow_dictate.config import AppConfig
-from flow_dictate.interfaces import AudioCapture, HotkeyCapture, TextInjector, TranscriptionClient
+from flow_dictate.interfaces import (
+    AudioCapture,
+    AudioChunk,
+    HotkeyCapture,
+    TextInjector,
+    TranscriptionClient,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +68,8 @@ class DictationService:
         audio_capture: AudioCapture,
         transcription_client: TranscriptionClient,
         text_injector: TextInjector,
+        on_recording_started: Callable[[], None] | None = None,
+        on_recording_stopped: Callable[[float], None] | None = None,
     ) -> None:
         """Store orchestration dependencies.
 
@@ -69,6 +79,8 @@ class DictationService:
             audio_capture: Audio capture implementation.
             transcription_client: Audio-to-text implementation.
             text_injector: Text injection implementation.
+            on_recording_started: Optional callback fired right before recording begins.
+            on_recording_stopped: Optional callback fired after recording stops with duration.
 
         Returns:
             None.
@@ -85,6 +97,49 @@ class DictationService:
         self._audio_capture = audio_capture
         self._transcription_client = transcription_client
         self._text_injector = text_injector
+        self._on_recording_started = on_recording_started
+        self._on_recording_stopped = on_recording_stopped
+
+    def _record_audio_segment(self) -> AudioChunk:
+        """Capture one audio segment using hold-to-record when available.
+
+        Parameters:
+            None.
+
+        Returns:
+            AudioChunk: Captured audio payload and metadata.
+
+        Raises:
+            RuntimeError: If underlying audio capture backend fails.
+
+        Example:
+            ``audio_chunk = service._record_audio_segment()``
+        """
+
+        start_monotonic = time.monotonic()
+        if self._on_recording_started is not None:
+            self._on_recording_started()
+
+        try:
+            record_while_pressed = getattr(self._audio_capture, "record_while_pressed", None)
+            is_pressed = getattr(self._hotkey_capture, "is_pressed", None)
+
+            if callable(record_while_pressed) and callable(is_pressed):
+                audio_chunk = record_while_pressed(
+                    is_pressed=is_pressed,
+                    max_seconds=self._config.max_record_seconds,
+                )
+            else:
+                # Fallback keeps compatibility with older test doubles and backends.
+                audio_chunk = self._audio_capture.record(
+                    max_seconds=self._config.max_record_seconds
+                )
+        finally:
+            if self._on_recording_stopped is not None:
+                elapsed = max(0.0, time.monotonic() - start_monotonic)
+                self._on_recording_stopped(elapsed)
+
+        return audio_chunk
 
     def run_once(self, timeout_seconds: float | None = None) -> ServiceRunResult:
         """Run a single iteration of the dictation pipeline.
@@ -109,7 +164,7 @@ class DictationService:
         if not triggered:
             return ServiceRunResult(triggered=False, transcription=None, injected=False)
 
-        audio_chunk = self._audio_capture.record(max_seconds=self._config.max_record_seconds)
+        audio_chunk = self._record_audio_segment()
         transcription = self._transcription_client.transcribe(audio_chunk).strip()
 
         # Whitespace-only transcriptions often indicate uncertain recognition;

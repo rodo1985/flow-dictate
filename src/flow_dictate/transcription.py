@@ -1,17 +1,25 @@
-"""Transcription clients for stub and OpenAI Realtime backends."""
+"""Transcription clients for stub, OpenAI Audio API, and Realtime backends."""
 
 from __future__ import annotations
 
 import base64
+import io
 import json
 import os
+from pathlib import Path
 from typing import Any, Mapping
+from urllib import error as urllib_error
+from urllib import request as urllib_request
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+import uuid
+import wave
 
 import numpy as np
 
 from flow_dictate.config import AppConfig
 from flow_dictate.interfaces import AudioChunk, TranscriptionClient
+
+DEFAULT_AUDIO_TRANSCRIPTION_URL = "https://api.openai.com/v1/audio/transcriptions"
 
 
 def _import_websocket() -> Any:
@@ -39,6 +47,318 @@ def _import_websocket() -> Any:
         ) from exc
 
     return websocket
+
+
+def _load_dotenv_values(path: Path) -> dict[str, str]:
+    """Load simple ``KEY=VALUE`` pairs from a dotenv file.
+
+    Parameters:
+        path: Path to dotenv file.
+
+    Returns:
+        dict[str, str]: Parsed environment key-value pairs.
+
+    Raises:
+        RuntimeError: If file reads fail.
+
+    Example:
+        ``values = _load_dotenv_values(Path(".env"))``
+    """
+
+    if not path.exists():
+        return {}
+
+    try:
+        content = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise RuntimeError(f"Unable to read dotenv file at {path}.") from exc
+
+    parsed: dict[str, str] = {}
+    for line in content.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+
+        if stripped.startswith("export "):
+            stripped = stripped[len("export ") :].strip()
+
+        if "=" not in stripped:
+            continue
+
+        key, raw_value = stripped.split("=", 1)
+        normalized_key = key.strip()
+        if not normalized_key:
+            continue
+
+        value = raw_value.strip()
+        if (
+            len(value) >= 2
+            and ((value[0] == value[-1] == '"') or (value[0] == value[-1] == "'"))
+        ):
+            value = value[1:-1]
+
+        parsed[normalized_key] = value
+
+    return parsed
+
+
+def _resolve_runtime_environment(environ: Mapping[str, str] | None = None) -> Mapping[str, str]:
+    """Resolve runtime environment values with `.env` support.
+
+    Parameters:
+        environ: Optional explicit environment mapping.
+
+    Returns:
+        Mapping[str, str]: Environment values used for API-key lookups.
+
+    Raises:
+        RuntimeError: If reading `.env` fails.
+
+    Example:
+        ``env = _resolve_runtime_environment()```
+    """
+
+    if environ is not None:
+        return environ
+
+    # Process environment wins over `.env` so shell overrides remain predictable.
+    return {
+        **_load_dotenv_values(Path.cwd() / ".env"),
+        **os.environ,
+    }
+
+
+def _to_mono_pcm16_bytes(audio: AudioChunk) -> tuple[bytes, int]:
+    """Normalize a chunk into mono PCM16 bytes and sample rate metadata.
+
+    Parameters:
+        audio: Captured audio payload and metadata.
+
+    Returns:
+        tuple[bytes, int]: Mono PCM16 bytes and sample rate.
+
+    Raises:
+        ValueError: If payload shape assumptions are violated.
+
+    Example:
+        ``pcm_bytes, sample_rate = _to_mono_pcm16_bytes(audio_chunk)``
+    """
+
+    if len(audio.data) % 2 != 0:
+        raise ValueError("Audio payload must contain an even number of bytes for PCM16.")
+
+    sample_rate_hz = audio.sample_rate_hz
+    pcm_samples = np.frombuffer(audio.data, dtype="<i2")
+
+    if audio.channels < 1:
+        raise ValueError("Audio chunk must have at least one channel.")
+    if pcm_samples.size % audio.channels != 0:
+        raise ValueError("Audio payload length is not divisible by the channel count.")
+
+    if audio.channels == 1:
+        mono_samples = pcm_samples.astype(np.float32)
+    else:
+        # We average channels to create a stable mono stream across hardware layouts.
+        frames = pcm_samples.reshape(-1, audio.channels).astype(np.float32)
+        mono_samples = frames.mean(axis=1)
+
+    pcm16_mono = np.clip(mono_samples, -32768, 32767).astype("<i2")
+    return pcm16_mono.tobytes(), sample_rate_hz
+
+
+def _audio_chunk_to_wav_bytes(audio: AudioChunk) -> bytes:
+    """Convert an ``AudioChunk`` into an in-memory WAV file payload.
+
+    Parameters:
+        audio: Captured audio payload and metadata.
+
+    Returns:
+        bytes: WAV file bytes suitable for Audio API upload.
+
+    Raises:
+        ValueError: If audio metadata or shape is invalid.
+
+    Example:
+        ``wav_bytes = _audio_chunk_to_wav_bytes(audio_chunk)``
+    """
+
+    pcm16_mono_bytes, sample_rate_hz = _to_mono_pcm16_bytes(audio)
+
+    wav_buffer = io.BytesIO()
+    with wave.open(wav_buffer, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate_hz)
+        wav_file.writeframes(pcm16_mono_bytes)
+
+    return wav_buffer.getvalue()
+
+
+def _encode_multipart_form_data(
+    fields: Mapping[str, str],
+    file_field_name: str,
+    filename: str,
+    file_content_type: str,
+    file_bytes: bytes,
+) -> tuple[bytes, str]:
+    """Encode fields and one file into a multipart/form-data payload.
+
+    Parameters:
+        fields: Form fields for model/config options.
+        file_field_name: Name of the multipart file field.
+        filename: Logical file name presented to the API.
+        file_content_type: MIME type for uploaded file.
+        file_bytes: File content bytes.
+
+    Returns:
+        tuple[bytes, str]: HTTP request body and ``Content-Type`` header value.
+
+    Raises:
+        ValueError: If required field names are empty.
+
+    Example:
+        ``body, content_type = _encode_multipart_form_data(...)``
+    """
+
+    if not file_field_name:
+        raise ValueError("file_field_name must not be empty.")
+    if not filename:
+        raise ValueError("filename must not be empty.")
+
+    boundary = f"----flowdictate-{uuid.uuid4().hex}"
+    body_parts: list[bytes] = []
+
+    for key, value in fields.items():
+        body_parts.append(f"--{boundary}\r\n".encode("utf-8"))
+        body_parts.append(
+            f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode("utf-8")
+        )
+        body_parts.append(value.encode("utf-8"))
+        body_parts.append(b"\r\n")
+
+    body_parts.append(f"--{boundary}\r\n".encode("utf-8"))
+    body_parts.append(
+        (
+            f'Content-Disposition: form-data; name="{file_field_name}"; '
+            f'filename="{filename}"\r\n'
+        ).encode("utf-8")
+    )
+    body_parts.append(f"Content-Type: {file_content_type}\r\n\r\n".encode("utf-8"))
+    body_parts.append(file_bytes)
+    body_parts.append(b"\r\n")
+    body_parts.append(f"--{boundary}--\r\n".encode("utf-8"))
+
+    body = b"".join(body_parts)
+    content_type = f"multipart/form-data; boundary={boundary}"
+    return body, content_type
+
+
+def _extract_http_error_message(exc: urllib_error.HTTPError) -> str:
+    """Extract a human-readable error from an HTTPError response body.
+
+    Parameters:
+        exc: HTTP error raised by ``urllib``.
+
+    Returns:
+        str: Most specific error message available.
+
+    Raises:
+        None.
+
+    Example:
+        ``message = _extract_http_error_message(exc)``
+    """
+
+    try:
+        response_body = exc.read().decode("utf-8")
+    except Exception:
+        response_body = ""
+
+    if response_body:
+        try:
+            parsed = json.loads(response_body)
+        except json.JSONDecodeError:
+            parsed = {}
+
+        if isinstance(parsed, dict):
+            if isinstance(parsed.get("error"), dict):
+                message = parsed["error"].get("message")
+                if isinstance(message, str) and message:
+                    return message
+
+            message = parsed.get("message")
+            if isinstance(message, str) and message:
+                return message
+
+    return f"Audio transcription request failed with HTTP {exc.code}."
+
+
+def _post_audio_transcription_request(
+    transcription_url: str,
+    api_key: str,
+    model: str,
+    wav_audio_bytes: bytes,
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    """Submit a WAV file to OpenAI Audio API transcriptions endpoint.
+
+    Parameters:
+        transcription_url: URL for ``/v1/audio/transcriptions``.
+        api_key: OpenAI API key.
+        model: Transcription model id.
+        wav_audio_bytes: WAV payload bytes.
+        timeout_seconds: Request timeout in seconds.
+
+    Returns:
+        dict[str, Any]: Parsed JSON response payload.
+
+    Raises:
+        RuntimeError: If request fails or response payload is invalid.
+
+    Example:
+        ``payload = _post_audio_transcription_request(...)``
+    """
+
+    body, content_type = _encode_multipart_form_data(
+        fields={
+            "model": model,
+            "response_format": "json",
+        },
+        file_field_name="file",
+        filename="dictation.wav",
+        file_content_type="audio/wav",
+        file_bytes=wav_audio_bytes,
+    )
+
+    request = urllib_request.Request(
+        url=transcription_url,
+        data=body,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": content_type,
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib_request.urlopen(request, timeout=timeout_seconds) as response:
+            response_text = response.read().decode("utf-8")
+    except urllib_error.HTTPError as exc:
+        raise RuntimeError(_extract_http_error_message(exc)) from exc
+    except TimeoutError as exc:
+        raise RuntimeError("Timed out waiting for audio transcription response.") from exc
+    except urllib_error.URLError as exc:
+        raise RuntimeError("Failed to connect to OpenAI audio transcription endpoint.") from exc
+
+    try:
+        parsed_payload = json.loads(response_text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Audio transcription response was not valid JSON.") from exc
+
+    if not isinstance(parsed_payload, dict):
+        raise RuntimeError("Audio transcription response payload had an unexpected shape.")
+
+    return parsed_payload
 
 
 def _build_realtime_websocket_url(base_url: str, model: str) -> str:
@@ -88,24 +408,8 @@ def _prepare_audio_for_realtime(audio: AudioChunk) -> tuple[str, int]:
         ``payload, rate = _prepare_audio_for_realtime(audio_chunk)``
     """
 
-    if len(audio.data) % 2 != 0:
-        raise ValueError("Audio payload must contain an even number of bytes for PCM16.")
-
-    sample_rate_hz = audio.sample_rate_hz
-    pcm_samples = np.frombuffer(audio.data, dtype="<i2")
-
-    if audio.channels < 1:
-        raise ValueError("Audio chunk must have at least one channel.")
-    if pcm_samples.size % audio.channels != 0:
-        raise ValueError("Audio payload length is not divisible by the channel count.")
-
-    if audio.channels == 1:
-        mono_samples = pcm_samples.astype(np.float32)
-    else:
-        # We average channels to create a stable mono stream for the transcription API.
-        # This avoids channel-selection bias with stereo or multi-channel inputs.
-        frames = pcm_samples.reshape(-1, audio.channels).astype(np.float32)
-        mono_samples = frames.mean(axis=1)
+    mono_pcm_bytes, sample_rate_hz = _to_mono_pcm16_bytes(audio)
+    mono_samples = np.frombuffer(mono_pcm_bytes, dtype="<i2").astype(np.float32)
 
     if sample_rate_hz != 24_000:
         # Realtime PCM ingestion expects 24 kHz. Linear interpolation keeps
@@ -320,6 +624,134 @@ class StubOpenAITranscriptionClient(TranscriptionClient):
         return self._default_text
 
 
+class OpenAIAudioTranscriptionClient(TranscriptionClient):
+    """Transcribe audio by uploading WAV data to OpenAI Audio API.
+
+    Parameters:
+        api_key: OpenAI API key for HTTP authentication.
+        model: Audio transcription model name.
+        transcription_url: HTTP endpoint for transcription requests.
+        request_timeout_seconds: Request timeout in seconds.
+
+    Returns:
+        OpenAIAudioTranscriptionClient: HTTP transcription backend.
+
+    Raises:
+        ValueError: If required values are invalid.
+
+    Example:
+        ``client = OpenAIAudioTranscriptionClient(api_key="sk-...", model="gpt-4o-mini-transcribe")``
+    """
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "gpt-4o-mini-transcribe",
+        transcription_url: str = DEFAULT_AUDIO_TRANSCRIPTION_URL,
+        request_timeout_seconds: float = 30.0,
+    ) -> None:
+        """Initialize audio-transcription client settings.
+
+        Parameters:
+            api_key: OpenAI API key.
+            model: Audio transcription model id.
+            transcription_url: HTTP endpoint for transcription requests.
+            request_timeout_seconds: Request timeout in seconds.
+
+        Returns:
+            None.
+
+        Raises:
+            ValueError: If required values are empty or timeout is non-positive.
+
+        Example:
+            ``OpenAIAudioTranscriptionClient(api_key="sk-...", model="gpt-4o-transcribe")``
+        """
+
+        if not api_key:
+            raise ValueError("api_key must not be empty.")
+        if not model:
+            raise ValueError("model must not be empty.")
+        if not transcription_url:
+            raise ValueError("transcription_url must not be empty.")
+        if request_timeout_seconds <= 0:
+            raise ValueError("request_timeout_seconds must be greater than 0.")
+
+        self._api_key = api_key
+        self._model = model
+        self._transcription_url = transcription_url
+        self._request_timeout_seconds = request_timeout_seconds
+
+    @classmethod
+    def from_config(
+        cls,
+        config: AppConfig,
+        environ: Mapping[str, str] | None = None,
+    ) -> "OpenAIAudioTranscriptionClient":
+        """Build an HTTP transcription client using ``AppConfig`` and environment.
+
+        Parameters:
+            config: Runtime application configuration.
+            environ: Optional environment mapping for API key lookup.
+
+        Returns:
+            OpenAIAudioTranscriptionClient: Configured HTTP transcription client.
+
+        Raises:
+            ValueError: If the configured API key environment variable is not set.
+
+        Example:
+            ``client = OpenAIAudioTranscriptionClient.from_config(config)``
+        """
+
+        env = _resolve_runtime_environment(environ=environ)
+        api_key = env.get(config.openai_api_key_env, "").strip()
+        if not api_key:
+            raise ValueError(
+                f"Environment variable '{config.openai_api_key_env}' is required for audio transcription."
+            )
+
+        return cls(
+            api_key=api_key,
+            model=config.transcription_model,
+            request_timeout_seconds=config.realtime_response_timeout_seconds,
+        )
+
+    def transcribe(self, audio: AudioChunk) -> str:
+        """Transcribe an ``AudioChunk`` using OpenAI ``/audio/transcriptions``.
+
+        Parameters:
+            audio: PCM16 audio chunk captured from microphone input.
+
+        Returns:
+            str: Final transcript text from the API response.
+
+        Raises:
+            RuntimeError: If upload/transcription fails or payload is malformed.
+
+        Example:
+            ``transcript = client.transcribe(audio_chunk)``
+        """
+
+        if not audio.data:
+            return ""
+
+        wav_audio_bytes = _audio_chunk_to_wav_bytes(audio)
+        payload = _post_audio_transcription_request(
+            transcription_url=self._transcription_url,
+            api_key=self._api_key,
+            model=self._model,
+            wav_audio_bytes=wav_audio_bytes,
+            timeout_seconds=self._request_timeout_seconds,
+        )
+
+        transcript = payload.get("text")
+        if isinstance(transcript, str):
+            return transcript.strip()
+
+        raise RuntimeError("Audio transcription response did not include a text transcript.")
+
+
 class OpenAIRealtimeTranscriptionClient(TranscriptionClient):
     """Transcribe microphone audio via OpenAI Realtime transcription sessions.
 
@@ -406,7 +838,7 @@ class OpenAIRealtimeTranscriptionClient(TranscriptionClient):
             ``client = OpenAIRealtimeTranscriptionClient.from_config(config)``
         """
 
-        env = environ if environ is not None else os.environ
+        env = _resolve_runtime_environment(environ=environ)
         api_key = env.get(config.openai_api_key_env, "").strip()
         if not api_key:
             raise ValueError(

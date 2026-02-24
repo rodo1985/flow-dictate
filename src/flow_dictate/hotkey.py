@@ -27,11 +27,16 @@ class StubHotkeyCapture(HotkeyCapture):
         True
     """
 
-    def __init__(self, auto_trigger_once: bool = False) -> None:
+    def __init__(
+        self,
+        auto_trigger_once: bool = False,
+        auto_hold_seconds: float = 0.25,
+    ) -> None:
         """Initialize the stub capture state.
 
         Parameters:
             auto_trigger_once: Whether the first wait should auto-trigger.
+            auto_hold_seconds: Simulated key-hold duration for each trigger.
 
         Returns:
             None.
@@ -43,15 +48,20 @@ class StubHotkeyCapture(HotkeyCapture):
             ``StubHotkeyCapture(auto_trigger_once=False)``
         """
 
+        if auto_hold_seconds <= 0:
+            raise ValueError("auto_hold_seconds must be greater than 0.")
+
         self._manual_triggered = False
         self._auto_trigger_once = auto_trigger_once
         self._auto_trigger_consumed = False
+        self._auto_hold_seconds = auto_hold_seconds
+        self._pressed_until_monotonic = 0.0
 
-    def trigger(self) -> None:
+    def trigger(self, hold_seconds: float | None = None) -> None:
         """Manually fire one hotkey event.
 
         Parameters:
-            None.
+            hold_seconds: Optional hold duration to simulate for this trigger.
 
         Returns:
             None.
@@ -63,7 +73,13 @@ class StubHotkeyCapture(HotkeyCapture):
             ``capture.trigger()``
         """
 
+        if hold_seconds is not None and hold_seconds <= 0:
+            raise ValueError("hold_seconds must be greater than 0 when provided.")
+
         self._manual_triggered = True
+        self._pressed_until_monotonic = (
+            time.monotonic() + (hold_seconds or self._auto_hold_seconds)
+        )
 
     def wait_for_trigger(self, timeout_seconds: float | None = None) -> bool:
         """Return trigger state, optionally sleeping to mimic blocking IO.
@@ -86,10 +102,16 @@ class StubHotkeyCapture(HotkeyCapture):
 
         if self._manual_triggered:
             self._manual_triggered = False
+            # Keep the existing hold deadline configured by ``trigger``.
+            if self._pressed_until_monotonic <= time.monotonic():
+                self._pressed_until_monotonic = (
+                    time.monotonic() + self._auto_hold_seconds
+                )
             return True
 
         if self._auto_trigger_once and not self._auto_trigger_consumed:
             self._auto_trigger_consumed = True
+            self._pressed_until_monotonic = time.monotonic() + self._auto_hold_seconds
             return True
 
         if timeout_seconds and timeout_seconds > 0:
@@ -97,6 +119,24 @@ class StubHotkeyCapture(HotkeyCapture):
             time.sleep(min(timeout_seconds, 0.01))
 
         return False
+
+    def is_pressed(self) -> bool:
+        """Return whether the simulated hotkey is currently held down.
+
+        Parameters:
+            None.
+
+        Returns:
+            bool: ``True`` while the simulated hold window is active.
+
+        Raises:
+            None.
+
+        Example:
+            ``capture.is_pressed()``
+        """
+
+        return time.monotonic() < self._pressed_until_monotonic
 
 
 class MacOSGlobalHotkeyCapture(HotkeyCapture):
@@ -137,6 +177,7 @@ class MacOSGlobalHotkeyCapture(HotkeyCapture):
         self._pressed_keys: set[str] = set()
         self._triggered_event = threading.Event()
         self._combo_armed = False
+        self._state_lock = threading.Lock()
         self._listener = self._create_listener()
         self._listener.start()
 
@@ -194,11 +235,12 @@ class MacOSGlobalHotkeyCapture(HotkeyCapture):
         if normalized is None:
             return
 
-        self._pressed_keys.add(normalized)
+        with self._state_lock:
+            self._pressed_keys.add(normalized)
 
-        if self._required_keys.issubset(self._pressed_keys) and not self._combo_armed:
-            self._triggered_event.set()
-            self._combo_armed = True
+            if self._required_keys.issubset(self._pressed_keys) and not self._combo_armed:
+                self._triggered_event.set()
+                self._combo_armed = True
 
     def _on_release(self, key: Any) -> None:
         """Track key release events and re-arm trigger detection.
@@ -220,11 +262,12 @@ class MacOSGlobalHotkeyCapture(HotkeyCapture):
         if normalized is None:
             return
 
-        if normalized in self._pressed_keys:
-            self._pressed_keys.remove(normalized)
+        with self._state_lock:
+            if normalized in self._pressed_keys:
+                self._pressed_keys.remove(normalized)
 
-        if not self._required_keys.issubset(self._pressed_keys):
-            self._combo_armed = False
+            if not self._required_keys.issubset(self._pressed_keys):
+                self._combo_armed = False
 
     def wait_for_trigger(self, timeout_seconds: float | None = None) -> bool:
         """Wait for a hotkey event to be captured.
@@ -269,6 +312,155 @@ class MacOSGlobalHotkeyCapture(HotkeyCapture):
         """
 
         self._listener.stop()
+
+    def is_pressed(self) -> bool:
+        """Return whether the configured key chord is currently held.
+
+        Parameters:
+            None.
+
+        Returns:
+            bool: ``True`` when all required hotkey tokens are currently pressed.
+
+        Raises:
+            None.
+
+        Example:
+            ``capture.is_pressed()``
+        """
+
+        with self._state_lock:
+            return self._required_keys.issubset(self._pressed_keys)
+
+
+def _sort_hotkey_tokens(tokens: set[str]) -> list[str]:
+    """Sort hotkey tokens into a stable human-readable order.
+
+    Parameters:
+        tokens: Normalized token set.
+
+    Returns:
+        list[str]: Ordered token list suitable for config persistence.
+
+    Raises:
+        None.
+
+    Example:
+        >>> _sort_hotkey_tokens({"space", "cmd", "ctrl"})
+        ['ctrl', 'cmd', 'space']
+    """
+
+    modifier_order = {"ctrl": 0, "cmd": 1, "shift": 2, "alt": 3}
+    special_order = {"space": 10, "enter": 11, "tab": 12, "esc": 13}
+
+    def _token_priority(token: str) -> tuple[int, int, str]:
+        if token in modifier_order:
+            return (0, modifier_order[token], token)
+        if token in special_order:
+            return (1, special_order[token], token)
+        return (2, 0, token)
+
+    return sorted(tokens, key=_token_priority)
+
+
+def format_hotkey_expression(tokens: set[str]) -> str:
+    """Convert normalized token names into ``+``-joined hotkey text.
+
+    Parameters:
+        tokens: Normalized token set.
+
+    Returns:
+        str: Hotkey expression in canonical order.
+
+    Raises:
+        ValueError: If token set is empty.
+
+    Example:
+        >>> format_hotkey_expression({"cmd", "ctrl"})
+        'ctrl+cmd'
+    """
+
+    if not tokens:
+        raise ValueError("tokens must contain at least one key.")
+
+    return "+".join(_sort_hotkey_tokens(tokens))
+
+
+def capture_hotkey_expression(timeout_seconds: float = 15.0) -> str:
+    """Capture a hotkey chord from live keyboard input and return its expression.
+
+    Parameters:
+        timeout_seconds: Max wait for key press and release completion.
+
+    Returns:
+        str: Captured hotkey expression such as ``ctrl+cmd+space``.
+
+    Raises:
+        RuntimeError: If listener dependencies are missing or capture times out.
+        ValueError: If timeout is non-positive.
+
+    Example:
+        ``expression = capture_hotkey_expression(timeout_seconds=15.0)``
+    """
+
+    if timeout_seconds <= 0:
+        raise ValueError("timeout_seconds must be greater than 0.")
+
+    try:
+        from pynput import keyboard
+    except ImportError as exc:
+        raise RuntimeError(
+            "pynput is required to capture hotkeys interactively. Run `uv sync` first."
+        ) from exc
+
+    currently_pressed: set[str] = set()
+    captured_tokens: set[str] = set()
+    capture_started = threading.Event()
+    capture_completed = threading.Event()
+    state_lock = threading.Lock()
+
+    def _on_press(key: Any) -> None:
+        normalized = _normalize_listener_key(key)
+        if normalized is None:
+            return
+
+        with state_lock:
+            currently_pressed.add(normalized)
+            captured_tokens.add(normalized)
+            capture_started.set()
+
+    def _on_release(key: Any) -> bool | None:
+        normalized = _normalize_listener_key(key)
+        if normalized is None:
+            return None
+
+        with state_lock:
+            currently_pressed.discard(normalized)
+
+            # Capture is complete once the user has pressed at least one
+            # supported token and then fully released the chord.
+            if capture_started.is_set() and not currently_pressed:
+                capture_completed.set()
+                return False
+
+        return None
+
+    listener = keyboard.Listener(
+        on_press=_on_press,
+        on_release=_on_release,
+        suppress=False,
+    )
+    listener.start()
+    try:
+        if not capture_started.wait(timeout=timeout_seconds):
+            raise RuntimeError("Timed out waiting for hotkey input.")
+        if not capture_completed.wait(timeout=timeout_seconds):
+            raise RuntimeError("Timed out waiting for hotkey release.")
+    finally:
+        listener.stop()
+        listener.join(timeout=0.5)
+
+    return format_hotkey_expression(captured_tokens)
 
 
 def _parse_hotkey_tokens(hotkey: str) -> set[str]:

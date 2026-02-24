@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
-from flow_dictate.hotkey import _normalize_hotkey_token, _normalize_listener_key, _parse_hotkey_tokens
+from flow_dictate.hotkey import (
+    StubHotkeyCapture,
+    _normalize_hotkey_token,
+    _normalize_listener_key,
+    _parse_hotkey_tokens,
+    format_hotkey_expression,
+)
 
 
 class _DummyKey:
@@ -137,3 +145,46 @@ def test_normalize_listener_key_special_and_char_tokens() -> None:
 
     assert _normalize_listener_key(_DummyKey("Key.cmd")) == "cmd"
     assert _normalize_listener_key(_DummyKey("'a'")) == "a"
+
+
+def test_format_hotkey_expression_orders_modifier_tokens_stably() -> None:
+    """Verify formatted expression uses canonical ordering for saved hotkeys.
+
+    Parameters:
+        None.
+
+    Returns:
+        None.
+
+    Raises:
+        AssertionError: If canonical ordering regresses.
+
+    Example:
+        ``pytest -k test_format_hotkey_expression_orders_modifier_tokens_stably``
+    """
+
+    expression = format_hotkey_expression({"space", "cmd", "ctrl"})
+    assert expression == "ctrl+cmd+space"
+
+
+def test_stub_hotkey_is_pressed_during_trigger_hold_window() -> None:
+    """Verify stub hotkey reports pressed state briefly after trigger.
+
+    Parameters:
+        None.
+
+    Returns:
+        None.
+
+    Raises:
+        AssertionError: If hold-state behavior regresses.
+
+    Example:
+        ``pytest -k test_stub_hotkey_is_pressed_during_trigger_hold_window``
+    """
+
+    capture = StubHotkeyCapture(auto_trigger_once=True, auto_hold_seconds=0.05)
+    assert capture.wait_for_trigger(timeout_seconds=0.0) is True
+    assert capture.is_pressed() is True
+    time.sleep(0.06)
+    assert capture.is_pressed() is False
