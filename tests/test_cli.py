@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+import json
 
 import flow_dictate.cli as cli_module
+from flow_dictate.interfaces import InjectionResult
+from flow_dictate.permissions import PermissionCheckResult, PermissionPreflightReport
 
 
 def test_upsert_env_variable_creates_and_updates_key(tmp_path: Path) -> None:
@@ -160,3 +163,153 @@ def test_main_handles_runtime_error_with_backend_hint(
     assert exit_code == 3
     assert "runtime error" in captured.err
     assert "--backend api" in captured.err
+
+
+def test_doctor_json_output_uses_machine_readable_payload(
+    monkeypatch: Any,
+    capsys: Any,
+) -> None:
+    """Verify ``doctor --json`` prints structured permission report output.
+
+    Parameters:
+        monkeypatch: Pytest monkeypatch fixture.
+        capsys: Pytest output capture fixture.
+
+    Returns:
+        None.
+
+    Raises:
+        AssertionError: If JSON payload or exit code behavior regresses.
+
+    Example:
+        ``pytest -k test_doctor_json_output_uses_machine_readable_payload``
+    """
+
+    report = PermissionPreflightReport(
+        microphone=PermissionCheckResult(
+            name="Microphone",
+            granted=True,
+            state="granted",
+            details="Microphone permission is granted.",
+        ),
+        accessibility=PermissionCheckResult(
+            name="Accessibility",
+            granted=True,
+            state="granted",
+            details="Accessibility permission is granted.",
+        ),
+        input_monitoring=PermissionCheckResult(
+            name="Input Monitoring",
+            granted=False,
+            state="denied",
+            details="Input Monitoring permission is denied.",
+            remediation="Enable permission in System Settings.",
+        ),
+    )
+    monkeypatch.setattr(cli_module, "run_permission_preflight", lambda prompt: report)
+
+    exit_code = cli_module.main(["doctor", "--json"])
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+
+    assert exit_code == 1
+    assert payload["all_required_granted"] is False
+    assert payload["input_monitoring"]["state"] == "denied"
+
+
+def test_daemon_run_once_emits_service_and_lifecycle_events(
+    monkeypatch: Any,
+    capsys: Any,
+) -> None:
+    """Verify daemon mode emits JSONL events for one successful run cycle.
+
+    Parameters:
+        monkeypatch: Pytest monkeypatch fixture.
+        capsys: Pytest output capture fixture.
+
+    Returns:
+        None.
+
+    Raises:
+        AssertionError: If daemon event emission regresses.
+
+    Example:
+        ``pytest -k test_daemon_run_once_emits_service_and_lifecycle_events``
+    """
+
+    callbacks: dict[str, Any] = {}
+
+    class _FakeService:
+        """Emit callback lifecycle when run once is invoked."""
+
+        def run_once(self, timeout_seconds: float | None = None) -> None:
+            """Call injected callbacks to emulate a successful dictation cycle.
+
+            Parameters:
+                timeout_seconds: Poll timeout from daemon loop; unused in this fake.
+
+            Returns:
+                None.
+
+            Raises:
+                None.
+
+            Example:
+                ``service.run_once(timeout_seconds=0.0)``
+            """
+
+            del timeout_seconds
+            callbacks["on_recording_started"]()
+            callbacks["on_recording_stopped"](1.25)
+            callbacks["on_transcription_started"]()
+            callbacks["on_transcription_completed"]("hello world")
+            callbacks["on_injection_completed"](
+                InjectionResult(
+                    inserted=True,
+                    method="direct-type",
+                    fallback_used=True,
+                    fallback_reason="direct_typing_failed",
+                )
+            )
+
+    def _fake_build_default_service(**kwargs: Any) -> _FakeService:
+        """Capture callbacks passed by CLI and return fake service.
+
+        Parameters:
+            kwargs: Service-construction kwargs from CLI command.
+
+        Returns:
+            _FakeService: Callback-emitting service double.
+
+        Raises:
+            None.
+
+        Example:
+            ``_fake_build_default_service(config=..., on_recording_started=...)``
+        """
+
+        callbacks["on_recording_started"] = kwargs["on_recording_started"]
+        callbacks["on_recording_stopped"] = kwargs["on_recording_stopped"]
+        callbacks["on_transcription_started"] = kwargs["on_transcription_started"]
+        callbacks["on_transcription_completed"] = kwargs["on_transcription_completed"]
+        callbacks["on_injection_completed"] = kwargs["on_injection_completed"]
+        return _FakeService()
+
+    monkeypatch.setattr(cli_module, "build_default_service", _fake_build_default_service)
+
+    exit_code = cli_module.main(["daemon", "--run-once", "--backend", "stub"])
+    captured = capsys.readouterr()
+    events = [
+        json.loads(line)
+        for line in captured.out.splitlines()
+        if line.strip()
+    ]
+
+    assert exit_code == 0
+    assert events[0]["event"] == "service_ready"
+    assert events[1]["event"] == "recording_started"
+    assert events[2]["event"] == "recording_stopped"
+    assert events[3]["event"] == "transcribing_started"
+    assert events[4]["event"] == "transcription_completed"
+    assert events[5]["event"] == "insertion_succeeded"
+    assert events[6]["event"] == "insertion_fallback_used"

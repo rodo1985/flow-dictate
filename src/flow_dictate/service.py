@@ -11,6 +11,7 @@ from flow_dictate.interfaces import (
     AudioCapture,
     AudioChunk,
     HotkeyCapture,
+    InjectionResult,
     TextInjector,
     TranscriptionClient,
 )
@@ -24,6 +25,7 @@ class ServiceRunResult:
         triggered: Whether a hotkey trigger was observed.
         transcription: Text produced by transcription, if any.
         injected: Whether text was sent to the injector.
+        injection_result: Structured injector outcome when injection was attempted.
 
     Returns:
         ServiceRunResult: Immutable summary of one orchestrator cycle.
@@ -39,6 +41,7 @@ class ServiceRunResult:
     triggered: bool
     transcription: str | None
     injected: bool
+    injection_result: InjectionResult | None = None
 
 
 class DictationService:
@@ -70,6 +73,9 @@ class DictationService:
         text_injector: TextInjector,
         on_recording_started: Callable[[], None] | None = None,
         on_recording_stopped: Callable[[float], None] | None = None,
+        on_transcription_started: Callable[[], None] | None = None,
+        on_transcription_completed: Callable[[str], None] | None = None,
+        on_injection_completed: Callable[[InjectionResult], None] | None = None,
     ) -> None:
         """Store orchestration dependencies.
 
@@ -81,6 +87,9 @@ class DictationService:
             text_injector: Text injection implementation.
             on_recording_started: Optional callback fired right before recording begins.
             on_recording_stopped: Optional callback fired after recording stops with duration.
+            on_transcription_started: Optional callback fired before transcription starts.
+            on_transcription_completed: Optional callback fired after transcription completes.
+            on_injection_completed: Optional callback fired after insertion completes.
 
         Returns:
             None.
@@ -99,6 +108,9 @@ class DictationService:
         self._text_injector = text_injector
         self._on_recording_started = on_recording_started
         self._on_recording_stopped = on_recording_stopped
+        self._on_transcription_started = on_transcription_started
+        self._on_transcription_completed = on_transcription_completed
+        self._on_injection_completed = on_injection_completed
 
     def _record_audio_segment(self) -> AudioChunk:
         """Capture one audio segment using hold-to-record when available.
@@ -165,18 +177,28 @@ class DictationService:
             return ServiceRunResult(triggered=False, transcription=None, injected=False)
 
         audio_chunk = self._record_audio_segment()
+
+        if self._on_transcription_started is not None:
+            self._on_transcription_started()
+
         transcription = self._transcription_client.transcribe(audio_chunk).strip()
+        if self._on_transcription_completed is not None:
+            self._on_transcription_completed(transcription)
 
         # Whitespace-only transcriptions often indicate uncertain recognition;
         # skipping injection prevents unexpected text spam in the focused app.
         if not transcription:
             return ServiceRunResult(triggered=True, transcription="", injected=False)
 
-        self._text_injector.inject(transcription)
+        injection_result = self._text_injector.inject(transcription)
+        if self._on_injection_completed is not None:
+            self._on_injection_completed(injection_result)
+
         return ServiceRunResult(
             triggered=True,
             transcription=transcription,
-            injected=True,
+            injected=injection_result.inserted,
+            injection_result=injection_result,
         )
 
     def run_forever(self, max_iterations: int | None = None) -> None:

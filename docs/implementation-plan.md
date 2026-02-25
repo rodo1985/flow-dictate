@@ -9,6 +9,11 @@ Ship an MVP for a **macOS-only** dictation CLI with:
 
 ## Current implementation status (February 24, 2026)
 - Foundation scaffold is complete (`pyproject`, package layout, CLI, service orchestration, tests).
+- Desktop productization foundation is now in place:
+  - `flow-dictate daemon` command with JSONL runtime events
+  - `flow-dictate doctor --json` onboarding-ready permission output
+  - active-app insertion strategies (`clipboard-paste`, `direct-type`)
+  - Swift menu-bar shell scaffold under `macos/FlowDictateApp`
 - macOS preflight and hotkey foundation is implemented:
   - `flow-dictate doctor` permission checks
   - global hotkey capture via `pynput`
@@ -152,3 +157,16 @@ uv run flow-dictate run --backend realtime --run-once --simulate-trigger --use-s
 - Output works for stdout and clipboard; active-app path has permission-aware fallback.
 - Tests pass locally and in CI.
 - Architecture and implementation docs are current and contributor-friendly.
+
+## 9) Desktop Productization Track
+The CLI remains the core runtime. Desktop app-shell work builds on top of this runtime instead of replacing it.
+
+Reference docs:
+- [macos-productization-roadmap.md](macos-productization-roadmap.md)
+- [macos-phase-1-plan.md](macos-phase-1-plan.md)
+- [macos-phase-2-plan.md](macos-phase-2-plan.md)
+
+Dependency boundaries:
+- Python CLI/service layer remains source-of-truth for capture/transcription/insertion.
+- Swift app-shell consumes daemon events and orchestrates lifecycle/UI.
+- Future desktop milestones should preserve CLI compatibility unless explicitly versioned.

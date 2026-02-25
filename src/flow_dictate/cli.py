@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 import re
 import sys
-from typing import Sequence, TextIO
+from typing import Callable, Sequence, TextIO
 
 from flow_dictate.audio import MicrophoneAudioCapture, StubAudioCapture
 from flow_dictate.config import AppConfig, VALID_BACKENDS, VALID_OUTPUT_MODES
+from flow_dictate.daemon import (
+    DaemonEventWriter,
+    map_exception_to_error_code,
+    run_daemon_loop,
+)
 from flow_dictate.hotkey import (
     MacOSGlobalHotkeyCapture,
     StubHotkeyCapture,
@@ -20,8 +26,17 @@ from flow_dictate.injector import (
     MacOSActiveAppTextInjector,
     StdoutTextInjector,
 )
-from flow_dictate.interfaces import AudioCapture, TextInjector, TranscriptionClient
-from flow_dictate.permissions import format_preflight_report, run_permission_preflight
+from flow_dictate.interfaces import (
+    AudioCapture,
+    InjectionResult,
+    TextInjector,
+    TranscriptionClient,
+)
+from flow_dictate.permissions import (
+    format_preflight_report,
+    preflight_report_to_dict,
+    run_permission_preflight,
+)
 from flow_dictate.service import DictationService
 from flow_dictate.transcription import (
     OpenAIAudioTranscriptionClient,
@@ -228,6 +243,194 @@ class _ConsoleRecordingIndicator:
         )
 
 
+class _DaemonRuntimeEventBridge:
+    """Bridge service callbacks into daemon JSONL runtime events.
+
+    Parameters:
+        writer: Event writer used for daemon JSONL output.
+
+    Returns:
+        _DaemonRuntimeEventBridge: Callback adapter for ``DictationService`` hooks.
+
+    Raises:
+        None.
+
+    Example:
+        ``bridge = _DaemonRuntimeEventBridge(writer)``
+    """
+
+    def __init__(self, writer: DaemonEventWriter) -> None:
+        """Store daemon event writer dependency.
+
+        Parameters:
+            writer: Event writer used for daemon JSONL output.
+
+        Returns:
+            None.
+
+        Raises:
+            None.
+
+        Example:
+            ``_DaemonRuntimeEventBridge(writer)``
+        """
+
+        self._writer = writer
+
+    def on_recording_started(self) -> None:
+        """Emit recording-start event.
+
+        Parameters:
+            None.
+
+        Returns:
+            None.
+
+        Raises:
+            None.
+
+        Example:
+            ``bridge.on_recording_started()``
+        """
+
+        self._writer.emit_recording_started()
+
+    def on_recording_stopped(self, elapsed_seconds: float) -> None:
+        """Emit recording-stopped event with elapsed duration.
+
+        Parameters:
+            elapsed_seconds: Recording duration in seconds.
+
+        Returns:
+            None.
+
+        Raises:
+            None.
+
+        Example:
+            ``bridge.on_recording_stopped(elapsed_seconds=1.5)``
+        """
+
+        self._writer.emit_recording_stopped(elapsed_seconds=elapsed_seconds)
+
+    def on_transcription_started(self) -> None:
+        """Emit transcribing-started event.
+
+        Parameters:
+            None.
+
+        Returns:
+            None.
+
+        Raises:
+            None.
+
+        Example:
+            ``bridge.on_transcription_started()``
+        """
+
+        self._writer.emit_transcribing_started()
+
+    def on_transcription_completed(self, transcription: str) -> None:
+        """Emit transcription-completed event with character count.
+
+        Parameters:
+            transcription: Final transcription text.
+
+        Returns:
+            None.
+
+        Raises:
+            None.
+
+        Example:
+            ``bridge.on_transcription_completed("hello")``
+        """
+
+        self._writer.emit_transcription_completed(character_count=len(transcription))
+
+    def on_injection_completed(self, injection_result: InjectionResult) -> None:
+        """Emit insertion events from injection outcome metadata.
+
+        Parameters:
+            injection_result: Structured insertion result produced by injector.
+
+        Returns:
+            None.
+
+        Raises:
+            None.
+
+        Example:
+            ``bridge.on_injection_completed(InjectionResult(inserted=True, method="stdout"))``
+        """
+
+        if injection_result.inserted:
+            self._writer.emit_insertion_succeeded(method=injection_result.method)
+        if injection_result.fallback_used and injection_result.fallback_reason is not None:
+            self._writer.emit_insertion_fallback_used(
+                reason=injection_result.fallback_reason
+            )
+
+
+def _add_runtime_command_arguments(
+    parser: argparse.ArgumentParser,
+    output_help_default: str,
+) -> None:
+    """Attach shared runtime options for ``run`` and ``daemon`` commands.
+
+    Parameters:
+        parser: Parser receiving shared runtime arguments.
+        output_help_default: Help-text describing output-mode default behavior.
+
+    Returns:
+        None.
+
+    Raises:
+        None.
+
+    Example:
+        ``_add_runtime_command_arguments(run_parser, output_help_default="stdout")``
+    """
+
+    parser.add_argument(
+        "--run-once",
+        action="store_true",
+        help="Run a single orchestration cycle instead of a loop.",
+    )
+    parser.add_argument(
+        "--simulate-trigger",
+        action="store_true",
+        help="Force the first hotkey wait to trigger in dry-run mode.",
+    )
+    parser.add_argument(
+        "--use-stub-hotkey",
+        action="store_true",
+        help="Force the stub hotkey listener instead of global macOS capture.",
+    )
+    parser.add_argument(
+        "--max-iterations",
+        type=_positive_int,
+        default=None,
+        help="Stop the loop after N iterations (useful for local dry runs).",
+    )
+    parser.add_argument(
+        "--backend",
+        choices=VALID_BACKENDS,
+        default=None,
+        help=(
+            "Backend override. "
+            "Defaults to FLOW_DICTATE_BACKEND or 'stub'."
+        ),
+    )
+    parser.add_argument(
+        "--output",
+        choices=VALID_OUTPUT_MODES,
+        default=None,
+        help=f"Output destination override. {output_help_default}",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the argument parser for the flow-dictate CLI.
 
@@ -254,44 +457,18 @@ def build_parser() -> argparse.ArgumentParser:
         "run",
         help="Start the dictation service loop.",
     )
-    run_parser.add_argument(
-        "--run-once",
-        action="store_true",
-        help="Run a single orchestration cycle instead of a loop.",
+    _add_runtime_command_arguments(
+        run_parser,
+        output_help_default="Defaults to FLOW_DICTATE_OUTPUT_MODE or 'stdout'.",
     )
-    run_parser.add_argument(
-        "--simulate-trigger",
-        action="store_true",
-        help="Force the first hotkey wait to trigger in dry-run mode.",
+
+    daemon_parser = subparsers.add_parser(
+        "daemon",
+        help="Run daemon mode with JSONL runtime events for app-shell integration.",
     )
-    run_parser.add_argument(
-        "--use-stub-hotkey",
-        action="store_true",
-        help="Force the stub hotkey listener instead of global macOS capture.",
-    )
-    run_parser.add_argument(
-        "--max-iterations",
-        type=_positive_int,
-        default=None,
-        help="Stop the loop after N iterations (useful for local dry runs).",
-    )
-    run_parser.add_argument(
-        "--backend",
-        choices=VALID_BACKENDS,
-        default=None,
-        help=(
-            "Backend override. "
-            "Defaults to FLOW_DICTATE_BACKEND or 'stub'."
-        ),
-    )
-    run_parser.add_argument(
-        "--output",
-        choices=VALID_OUTPUT_MODES,
-        default=None,
-        help=(
-            "Output destination override. "
-            "Defaults to FLOW_DICTATE_OUTPUT_MODE or 'stdout'."
-        ),
+    _add_runtime_command_arguments(
+        daemon_parser,
+        output_help_default="Defaults to 'active-app' unless --output is provided.",
     )
 
     doctor_parser = subparsers.add_parser(
@@ -302,6 +479,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--prompt-permissions",
         action="store_true",
         help="Allow macOS permission prompts where supported.",
+    )
+    doctor_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Render preflight report as machine-readable JSON.",
     )
 
     hotkey_setup_parser = subparsers.add_parser(
@@ -349,6 +531,7 @@ def _build_text_injector(config: AppConfig, output_mode: str) -> TextInjector:
 
     if output_mode == "active-app":
         return MacOSActiveAppTextInjector(
+            insertion_strategy=config.active_app_insertion_strategy,
             fallback_to_clipboard=config.active_app_fallback_to_clipboard
         )
 
@@ -444,6 +627,11 @@ def build_default_service(
     backend: str | None = None,
     output_mode: str | None = None,
     recording_indicator: _ConsoleRecordingIndicator | None = None,
+    on_recording_started: Callable[[], None] | None = None,
+    on_recording_stopped: Callable[[float], None] | None = None,
+    on_transcription_started: Callable[[], None] | None = None,
+    on_transcription_completed: Callable[[str], None] | None = None,
+    on_injection_completed: Callable[[InjectionResult], None] | None = None,
 ) -> DictationService:
     """Create a default orchestrator using configured runtime implementations.
 
@@ -454,6 +642,11 @@ def build_default_service(
         backend: Optional backend mode override.
         output_mode: Optional output destination override.
         recording_indicator: Optional terminal indicator for active recording.
+        on_recording_started: Optional callback fired right before recording begins.
+        on_recording_stopped: Optional callback fired after recording stops.
+        on_transcription_started: Optional callback fired before transcription begins.
+        on_transcription_completed: Optional callback fired after transcription is produced.
+        on_injection_completed: Optional callback fired when insertion result is available.
 
     Returns:
         DictationService: Service wired with selected runtime components.
@@ -487,12 +680,109 @@ def build_default_service(
         transcription_client=transcription_client,
         text_injector=text_injector,
         on_recording_started=(
-            recording_indicator.start if recording_indicator is not None else None
+            on_recording_started
+            if on_recording_started is not None
+            else (recording_indicator.start if recording_indicator is not None else None)
         ),
         on_recording_stopped=(
-            recording_indicator.stop if recording_indicator is not None else None
+            on_recording_stopped
+            if on_recording_stopped is not None
+            else (recording_indicator.stop if recording_indicator is not None else None)
         ),
+        on_transcription_started=on_transcription_started,
+        on_transcription_completed=on_transcription_completed,
+        on_injection_completed=on_injection_completed,
     )
+
+
+def _run_doctor_command(prompt_permissions: bool, json_output: bool) -> int:
+    """Execute permission preflight doctor command.
+
+    Parameters:
+        prompt_permissions: Whether checks may trigger macOS permission prompts.
+        json_output: Whether to emit machine-readable JSON.
+
+    Returns:
+        int: Process-style exit code.
+
+    Raises:
+        None.
+
+    Example:
+        ``_run_doctor_command(prompt_permissions=False, json_output=True)``
+    """
+
+    report = run_permission_preflight(prompt=prompt_permissions)
+    if json_output:
+        print(json.dumps(preflight_report_to_dict(report), sort_keys=True))
+    else:
+        print(format_preflight_report(report))
+    return 0 if report.all_required_granted else 1
+
+
+def _run_daemon_command(args: argparse.Namespace) -> int:
+    """Execute daemon mode with JSONL runtime event output.
+
+    Parameters:
+        args: Parsed command arguments from argparse.
+
+    Returns:
+        int: Process-style exit code.
+
+    Raises:
+        None.
+
+    Example:
+        ``_run_daemon_command(args)``
+    """
+
+    writer = DaemonEventWriter(stream=sys.stdout)
+
+    try:
+        config = AppConfig.from_env()
+        selected_backend = args.backend or config.backend
+        # Daemon mode is primarily consumed by external app shells, so we default to
+        # active-app insertion unless explicitly overridden.
+        selected_output_mode = args.output or "active-app"
+        bridge = _DaemonRuntimeEventBridge(writer=writer)
+        service = build_default_service(
+            config=config,
+            simulate_trigger=args.simulate_trigger,
+            use_stub_hotkey=args.use_stub_hotkey,
+            backend=args.backend,
+            output_mode=selected_output_mode,
+            recording_indicator=None,
+            on_recording_started=bridge.on_recording_started,
+            on_recording_stopped=bridge.on_recording_stopped,
+            on_transcription_started=bridge.on_transcription_started,
+            on_transcription_completed=bridge.on_transcription_completed,
+            on_injection_completed=bridge.on_injection_completed,
+        )
+    except (RuntimeError, ValueError) as exc:
+        writer.emit_error(code=map_exception_to_error_code(exc), message=str(exc))
+        print(f"flow-dictate daemon startup error: {exc}", file=sys.stderr)
+        return 2
+
+    writer.emit_service_ready(
+        backend=selected_backend,
+        output_mode=selected_output_mode,
+    )
+
+    try:
+        if args.run_once:
+            service.run_once(timeout_seconds=0.0)
+            return 0
+
+        run_daemon_loop(
+            service,
+            poll_interval_seconds=config.daemon_poll_interval_seconds,
+            max_iterations=args.max_iterations,
+        )
+        return 0
+    except (RuntimeError, ValueError) as exc:
+        writer.emit_error(code=map_exception_to_error_code(exc), message=str(exc))
+        print(f"flow-dictate daemon runtime error: {exc}", file=sys.stderr)
+        return 3
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -515,9 +805,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "doctor":
-        report = run_permission_preflight(prompt=args.prompt_permissions)
-        print(format_preflight_report(report))
-        return 0 if report.all_required_granted else 1
+        return _run_doctor_command(
+            prompt_permissions=args.prompt_permissions,
+            json_output=args.json,
+        )
 
     if args.command == "hotkey-setup":
         try:
@@ -532,6 +823,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command is None:
         parser.print_help()
         return 0
+
+    if args.command == "daemon":
+        return _run_daemon_command(args=args)
 
     try:
         config = AppConfig.from_env()

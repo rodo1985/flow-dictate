@@ -9,6 +9,10 @@ from typing import Mapping
 
 VALID_OUTPUT_MODES: tuple[str, ...] = ("stdout", "clipboard", "active-app")
 VALID_BACKENDS: tuple[str, ...] = ("stub", "api", "realtime")
+VALID_ACTIVE_APP_INSERTION_STRATEGIES: tuple[str, ...] = (
+    "clipboard-paste",
+    "direct-type",
+)
 
 
 def _load_dotenv_values(path: Path) -> dict[str, str]:
@@ -83,6 +87,8 @@ class AppConfig:
         temporary_audio_dir: Directory where temporary audio artifacts may be written.
         daemon_poll_interval_seconds: Poll interval used by the orchestrator loop.
         output_mode: Injector strategy for delivering text output.
+        active_app_insertion_strategy: Primary insertion strategy when output mode
+            is ``active-app``.
         active_app_fallback_to_clipboard: Whether active-app mode should keep clipboard output
             when auto-paste fails.
         backend: Runtime backend strategy (``stub``, ``api``, or ``realtime``).
@@ -112,6 +118,7 @@ class AppConfig:
     temporary_audio_dir: Path = Path("/tmp/flow-dictate")
     daemon_poll_interval_seconds: float = 0.10
     output_mode: str = "stdout"
+    active_app_insertion_strategy: str = "clipboard-paste"
     active_app_fallback_to_clipboard: bool = True
     backend: str = "stub"
 
@@ -151,6 +158,12 @@ class AppConfig:
         if self.output_mode not in VALID_OUTPUT_MODES:
             valid_modes = ", ".join(VALID_OUTPUT_MODES)
             raise ValueError(f"output_mode must be one of: {valid_modes}.")
+        if self.active_app_insertion_strategy not in VALID_ACTIVE_APP_INSERTION_STRATEGIES:
+            valid_strategies = ", ".join(VALID_ACTIVE_APP_INSERTION_STRATEGIES)
+            raise ValueError(
+                "active_app_insertion_strategy must be one of: "
+                f"{valid_strategies}."
+            )
         if self.backend not in VALID_BACKENDS:
             valid_backends = ", ".join(VALID_BACKENDS)
             raise ValueError(f"backend must be one of: {valid_backends}.")
@@ -236,6 +249,11 @@ class AppConfig:
             "FLOW_DICTATE_OUTPUT_MODE",
             defaults.output_mode,
         )
+        active_app_insertion_strategy = _parse_active_app_insertion_strategy(
+            env.get("FLOW_DICTATE_ACTIVE_APP_INSERTION_STRATEGY"),
+            "FLOW_DICTATE_ACTIVE_APP_INSERTION_STRATEGY",
+            defaults.active_app_insertion_strategy,
+        )
         active_app_fallback_to_clipboard = _parse_bool(
             env.get("FLOW_DICTATE_ACTIVE_APP_FALLBACK_TO_CLIPBOARD"),
             "FLOW_DICTATE_ACTIVE_APP_FALLBACK_TO_CLIPBOARD",
@@ -261,6 +279,7 @@ class AppConfig:
             temporary_audio_dir=temporary_audio_dir,
             daemon_poll_interval_seconds=daemon_poll_interval_seconds,
             output_mode=output_mode,
+            active_app_insertion_strategy=active_app_insertion_strategy,
             active_app_fallback_to_clipboard=active_app_fallback_to_clipboard,
             backend=backend,
         )
@@ -423,6 +442,44 @@ def _parse_backend(raw_value: str | None, name: str, default: str) -> str:
 
     valid_backends = ", ".join(VALID_BACKENDS)
     raise ValueError(f"{name} must be one of: {valid_backends}.")
+
+
+def _parse_active_app_insertion_strategy(
+    raw_value: str | None,
+    name: str,
+    default: str,
+) -> str:
+    """Parse active-app insertion strategy from environment values.
+
+    Parameters:
+        raw_value: Raw value fetched from an environment mapping.
+        name: Environment variable name used for clearer error messages.
+        default: Fallback value when ``raw_value`` is missing or blank.
+
+    Returns:
+        str: A normalized strategy from ``VALID_ACTIVE_APP_INSERTION_STRATEGIES``.
+
+    Raises:
+        ValueError: If the provided strategy is not supported.
+
+    Example:
+        >>> _parse_active_app_insertion_strategy(
+        ...     "direct-type",
+        ...     "FLOW_DICTATE_ACTIVE_APP_INSERTION_STRATEGY",
+        ...     "clipboard-paste",
+        ... )
+        'direct-type'
+    """
+
+    if raw_value is None or raw_value == "":
+        return default
+
+    normalized = raw_value.strip().lower()
+    if normalized in VALID_ACTIVE_APP_INSERTION_STRATEGIES:
+        return normalized
+
+    valid_strategies = ", ".join(VALID_ACTIVE_APP_INSERTION_STRATEGIES)
+    raise ValueError(f"{name} must be one of: {valid_strategies}.")
 
 
 def _parse_optional_text(raw_value: str | None) -> str | None:

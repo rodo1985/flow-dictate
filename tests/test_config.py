@@ -38,6 +38,7 @@ def test_from_env_uses_dataclass_defaults_when_env_missing() -> None:
     assert config.realtime_connect_timeout_seconds == 15.0
     assert config.realtime_response_timeout_seconds == 30.0
     assert config.output_mode == "stdout"
+    assert config.active_app_insertion_strategy == "clipboard-paste"
     assert config.active_app_fallback_to_clipboard is True
     assert config.backend == "stub"
 
@@ -81,11 +82,13 @@ def test_from_env_parses_output_and_fallback_settings() -> None:
     config = AppConfig.from_env(
         {
             "FLOW_DICTATE_OUTPUT_MODE": "active-app",
+            "FLOW_DICTATE_ACTIVE_APP_INSERTION_STRATEGY": "direct-type",
             "FLOW_DICTATE_ACTIVE_APP_FALLBACK_TO_CLIPBOARD": "false",
         }
     )
 
     assert config.output_mode == "active-app"
+    assert config.active_app_insertion_strategy == "direct-type"
     assert config.active_app_fallback_to_clipboard is False
 
 
@@ -107,6 +110,28 @@ def test_from_env_rejects_invalid_output_mode() -> None:
 
     with pytest.raises(ValueError, match="FLOW_DICTATE_OUTPUT_MODE"):
         AppConfig.from_env({"FLOW_DICTATE_OUTPUT_MODE": "printer"})
+
+
+def test_from_env_rejects_invalid_active_app_insertion_strategy() -> None:
+    """Verify unsupported insertion strategies raise a clear ``ValueError``.
+
+    Parameters:
+        None.
+
+    Returns:
+        None.
+
+    Raises:
+        AssertionError: If invalid insertion strategy is accepted.
+
+    Example:
+        ``pytest -k test_from_env_rejects_invalid_active_app_insertion_strategy``
+    """
+
+    with pytest.raises(ValueError, match="FLOW_DICTATE_ACTIVE_APP_INSERTION_STRATEGY"):
+        AppConfig.from_env(
+            {"FLOW_DICTATE_ACTIVE_APP_INSERTION_STRATEGY": "telepathy"}
+        )
 
 
 def test_from_env_parses_optional_audio_input_device() -> None:

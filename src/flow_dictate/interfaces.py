@@ -55,6 +55,57 @@ class AudioChunk:
             raise ValueError("channels must be greater than 0.")
 
 
+@dataclass(frozen=True, slots=True)
+class InjectionResult:
+    """Describe the outcome of one text-injection attempt.
+
+    Parameters:
+        inserted: Whether text was successfully inserted into the target destination.
+        method: Injection method used (for example, ``stdout`` or ``direct-type``).
+        fallback_used: Whether a fallback path was required.
+        fallback_reason: Optional machine-readable fallback reason when ``fallback_used`` is ``True``.
+
+    Returns:
+        InjectionResult: Immutable text-injection outcome record.
+
+    Raises:
+        ValueError: If a fallback is marked as used without a non-empty reason.
+
+    Example:
+        >>> InjectionResult(
+        ...     inserted=True,
+        ...     method="direct-type",
+        ...     fallback_used=True,
+        ...     fallback_reason="direct_typing_failed",
+        ... )
+        InjectionResult(inserted=True, method='direct-type', fallback_used=True, fallback_reason='direct_typing_failed')
+    """
+
+    inserted: bool
+    method: str
+    fallback_used: bool = False
+    fallback_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        """Validate fallback invariants for telemetry safety.
+
+        Parameters:
+            None.
+
+        Returns:
+            None.
+
+        Raises:
+            ValueError: If fallback metadata is inconsistent.
+
+        Example:
+            ``InjectionResult(inserted=True, method="stdout")``
+        """
+
+        if self.fallback_used and not (self.fallback_reason and self.fallback_reason.strip()):
+            raise ValueError("fallback_reason must be provided when fallback_used is True.")
+
+
 class HotkeyCapture(Protocol):
     """Define behavior for listening to a global hotkey trigger."""
 
@@ -162,14 +213,14 @@ class TranscriptionClient(Protocol):
 class TextInjector(Protocol):
     """Define behavior for injecting text into the active macOS target."""
 
-    def inject(self, text: str) -> None:
+    def inject(self, text: str) -> InjectionResult:
         """Insert text into the foreground application.
 
         Parameters:
             text: Final text to insert.
 
         Returns:
-            None.
+            InjectionResult: Structured insertion outcome for runtime telemetry.
 
         Raises:
             RuntimeError: Implementations may raise for accessibility failures.

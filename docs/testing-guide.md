@@ -20,6 +20,7 @@ uv run --group dev ruff check .
 ```bash
 uv run flow-dictate doctor
 uv run flow-dictate doctor --prompt-permissions
+uv run flow-dictate doctor --json
 ```
 
 Expected behavior:
@@ -43,6 +44,15 @@ uv run flow-dictate run --backend stub --run-once --simulate-trigger --use-stub-
 Expected behavior:
 - Command exits successfully.
 - A stub transcript is produced and routed to the selected output mode.
+
+## Daemon event stream dry run
+```bash
+uv run flow-dictate daemon --backend stub --run-once --simulate-trigger --use-stub-hotkey
+```
+
+Expected behavior:
+- Command exits successfully.
+- Stdout emits newline-delimited JSON events (service lifecycle + insertion outcome).
 
 ## 3) Output mode verification
 
@@ -111,6 +121,37 @@ uv run flow-dictate run --backend realtime --output stdout
 Expected behavior:
 - Same hold-to-record UX as API backend.
 - If the selected model is unsupported in realtime mode, the command exits with a startup or runtime error.
+
+## 7) macOS app shell checks (team-alpha)
+
+## Build app shell
+```bash
+swift build --package-path macos/FlowDictateApp
+```
+
+Expected behavior:
+- Swift package compiles cleanly.
+
+## Installer smoke test
+```bash
+./scripts/install_team_alpha_macos.sh
+open /Applications/FlowDictate.app
+```
+
+Expected behavior:
+- App opens as a menu-bar utility.
+- Flow Dictate icon is visible in the macOS menu bar.
+- Setup window can be opened from menu and auto-opens when required permissions are missing.
+- Setup includes a `Request Permissions` action that triggers available macOS prompts.
+- Starting worker surfaces lifecycle states in menu.
+
+## HUD smoke test
+- Enable `Show HUD` in menu.
+- Trigger dictation hotkey in a text field.
+
+Expected behavior:
+- HUD appears for recording and transcribing.
+- Success/error states auto-hide after configured timings.
 
 ## 6) Useful failure signatures
 - `flow-dictate startup error: ... OPENAI_API_KEY ... required`: set API key or use `--backend stub`.

@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Callable
 
 from flow_dictate.config import AppConfig
-from flow_dictate.interfaces import AudioChunk
+from flow_dictate.interfaces import AudioChunk, InjectionResult
 from flow_dictate.service import DictationService
 
 
@@ -179,14 +179,14 @@ class FakeTextInjector:
 
         self.injected_text: list[str] = []
 
-    def inject(self, text: str) -> None:
+    def inject(self, text: str) -> InjectionResult:
         """Append text to in-memory history.
 
         Parameters:
             text: Text requested for injection.
 
         Returns:
-            None.
+            InjectionResult: Structured insertion result.
 
         Raises:
             None.
@@ -196,6 +196,7 @@ class FakeTextInjector:
         """
 
         self.injected_text.append(text)
+        return InjectionResult(inserted=True, method="test-injector")
 
 
 def test_run_once_injects_text_after_trigger() -> None:
@@ -233,6 +234,8 @@ def test_run_once_injects_text_after_trigger() -> None:
     assert result.triggered is True
     assert result.transcription == "hello world"
     assert result.injected is True
+    assert result.injection_result is not None
+    assert result.injection_result.method == "test-injector"
     assert audio.record_calls == [12.5]
     assert injector.injected_text == ["hello world"]
 
@@ -493,3 +496,40 @@ def test_run_once_emits_recording_callbacks() -> None:
 
     assert events[0] == "start"
     assert "stop" in events
+
+
+def test_run_once_emits_transcription_and_injection_callbacks() -> None:
+    """Verify transcription and insertion callbacks emit expected payloads.
+
+    Parameters:
+        None.
+
+    Returns:
+        None.
+
+    Raises:
+        AssertionError: If callback invocation order or payloads regress.
+
+    Example:
+        ``pytest -k test_run_once_emits_transcription_and_injection_callbacks``
+    """
+
+    events: list[str] = []
+    service = DictationService(
+        config=AppConfig(),
+        hotkey_capture=HoldAwareHotkey([True, False]),
+        audio_capture=HoldAwareAudioCapture(),
+        transcription_client=FakeTranscriptionClient("callback text"),
+        text_injector=FakeTextInjector(),
+        on_transcription_started=lambda: events.append("transcription-start"),
+        on_transcription_completed=lambda text: events.append(f"transcription:{text}"),
+        on_injection_completed=lambda result: events.append(f"injection:{result.method}"),
+    )
+
+    service.run_once(timeout_seconds=0.0)
+
+    assert events == [
+        "transcription-start",
+        "transcription:callback text",
+        "injection:test-injector",
+    ]

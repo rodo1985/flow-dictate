@@ -9,6 +9,7 @@ from flow_dictate.permissions import (
     check_input_monitoring_permission,
     check_microphone_permission,
     format_preflight_report,
+    preflight_report_to_dict,
 )
 
 
@@ -85,3 +86,47 @@ def test_format_preflight_report_includes_summary_and_remediation() -> None:
     assert "Accessibility: NEEDS ACTION" in output
     assert "Fix: Enable Accessibility in System Settings." in output
     assert "One or more required permissions are missing." in output
+
+
+def test_preflight_report_to_dict_preserves_core_fields() -> None:
+    """Verify dictionary serialization keeps expected permission fields.
+
+    Parameters:
+        None.
+
+    Returns:
+        None.
+
+    Raises:
+        AssertionError: If serialized payload shape regresses.
+
+    Example:
+        ``pytest -k test_preflight_report_to_dict_preserves_core_fields``
+    """
+
+    report = PermissionPreflightReport(
+        microphone=PermissionCheckResult(
+            name="Microphone",
+            granted=True,
+            state="granted",
+            details="Microphone permission is granted.",
+        ),
+        accessibility=PermissionCheckResult(
+            name="Accessibility",
+            granted=True,
+            state="granted",
+            details="Accessibility permission is granted.",
+        ),
+        input_monitoring=PermissionCheckResult(
+            name="Input Monitoring",
+            granted=True,
+            state="granted",
+            details="Input Monitoring permission is granted.",
+        ),
+    )
+
+    payload = preflight_report_to_dict(report)
+
+    assert payload["all_required_granted"] is True
+    assert payload["microphone"]["state"] == "granted"
+    assert payload["accessibility"]["name"] == "Accessibility"

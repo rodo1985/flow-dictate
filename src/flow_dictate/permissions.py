@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 import sys
 import threading
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,7 +196,10 @@ def check_microphone_permission(prompt: bool = False) -> PermissionCheckResult:
         granted=False,
         state="denied",
         details="Microphone permission is denied.",
-        remediation="Enable Microphone for your terminal app in System Settings.",
+        remediation=(
+            "Enable Microphone for the Flow Dictate worker process "
+            "(python3) in System Settings."
+        ),
     )
 
 
@@ -289,7 +294,10 @@ def check_accessibility_permission(prompt: bool = False) -> PermissionCheckResul
         granted=False,
         state="denied",
         details="Accessibility permission is not granted.",
-        remediation="Enable Accessibility for your terminal app in System Settings.",
+        remediation=(
+            "Enable Accessibility for the Flow Dictate worker process "
+            "(python3) in System Settings."
+        ),
     )
 
 
@@ -349,7 +357,10 @@ def check_input_monitoring_permission() -> PermissionCheckResult:
             granted=False,
             state="denied",
             details="Input Monitoring permission is not granted.",
-            remediation="Enable Input Monitoring for your terminal app in System Settings.",
+            remediation=(
+                "Enable Input Monitoring for the Flow Dictate worker process "
+                "(python3) in System Settings."
+            ),
         )
 
     Quartz.CFMachPortInvalidate(tap)
@@ -392,3 +403,27 @@ def format_preflight_report(report: PermissionPreflightReport) -> str:
     )
     lines.append(summary)
     return "\n".join(lines)
+
+
+def preflight_report_to_dict(report: PermissionPreflightReport) -> dict[str, Any]:
+    """Convert a permission preflight report to a JSON-serializable dictionary.
+
+    Parameters:
+        report: Permission preflight report to serialize.
+
+    Returns:
+        dict[str, Any]: Machine-readable permission result payload.
+
+    Raises:
+        None.
+
+    Example:
+        ``payload = preflight_report_to_dict(report)``
+    """
+
+    return {
+        "all_required_granted": report.all_required_granted,
+        "microphone": asdict(report.microphone),
+        "accessibility": asdict(report.accessibility),
+        "input_monitoring": asdict(report.input_monitoring),
+    }

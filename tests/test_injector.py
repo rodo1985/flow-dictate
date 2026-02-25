@@ -84,6 +84,69 @@ class FailingPasteTrigger:
         raise RuntimeError("paste unavailable")
 
 
+class RecordingDirectTypingTrigger:
+    """Record direct-typing calls and payloads."""
+
+    def __init__(self, events: list[str]) -> None:
+        """Store shared event history for assertions.
+
+        Parameters:
+            events: Mutable event log shared with the test.
+
+        Returns:
+            None.
+
+        Raises:
+            None.
+
+        Example:
+            ``RecordingDirectTypingTrigger(events=[])``
+        """
+
+        self._events = events
+
+    def __call__(self, text: str) -> None:
+        """Record one direct-typing operation.
+
+        Parameters:
+            text: Text payload passed to typing automation.
+
+        Returns:
+            None.
+
+        Raises:
+            None.
+
+        Example:
+            ``trigger("hello")``
+        """
+
+        self._events.append(f"type:{text}")
+
+
+class FailingDirectTypingTrigger:
+    """Raise a deterministic error for direct-typing requests."""
+
+    def __call__(self, text: str) -> None:
+        """Raise deterministic direct-typing failure.
+
+        Parameters:
+            text: Text payload; unused in this fake.
+
+        Returns:
+            None.
+
+        Raises:
+            RuntimeError: Always raised to force fallback behavior.
+
+        Example:
+            ``FailingDirectTypingTrigger()("hello")``
+        """
+
+        del text
+        raise RuntimeError("direct typing unavailable")
+
+
 def test_clipboard_injector_uses_writer_callback() -> None:
     """Verify clipboard injector writes the provided text through its callback.
 
@@ -103,9 +166,11 @@ def test_clipboard_injector_uses_writer_callback() -> None:
     captured: list[str] = []
     injector = ClipboardTextInjector(clipboard_writer=captured.append)
 
-    injector.inject("hello")
+    result = injector.inject("hello")
 
     assert captured == ["hello"]
+    assert result.method == "clipboard"
+    assert result.inserted is True
 
 
 def test_active_app_injector_pastes_after_copying_to_clipboard() -> None:
@@ -136,9 +201,11 @@ def test_active_app_injector_pastes_after_copying_to_clipboard() -> None:
         platform_name="darwin",
     )
 
-    injector.inject("voice text")
+    result = injector.inject("voice text")
 
     assert events == ["clipboard:voice text", "paste"]
+    assert result.method == "clipboard-paste"
+    assert result.fallback_used is False
 
 
 def test_active_app_injector_falls_back_to_clipboard_on_paste_failure() -> None:
@@ -167,10 +234,12 @@ def test_active_app_injector_falls_back_to_clipboard_on_paste_failure() -> None:
         platform_name="darwin",
     )
 
-    injector.inject("fallback text")
+    result = injector.inject("fallback text")
 
     assert captured == ["fallback text"]
     assert "clipboard" in warning_stream.getvalue().lower()
+    assert result.fallback_used is True
+    assert result.fallback_reason == "paste_trigger_failed"
 
 
 def test_active_app_injector_raises_when_fallback_disabled() -> None:
@@ -225,3 +294,77 @@ def test_active_app_injector_rejects_non_macos_platforms() -> None:
 
     with pytest.raises(RuntimeError, match="only supported on macOS"):
         injector.inject("hello")
+
+
+def test_active_app_injector_direct_type_path_succeeds() -> None:
+    """Verify direct-typing strategy succeeds without fallback when available.
+
+    Parameters:
+        None.
+
+    Returns:
+        None.
+
+    Raises:
+        AssertionError: If direct-typing strategy behavior regresses.
+
+    Example:
+        ``pytest -k test_active_app_injector_direct_type_path_succeeds``
+    """
+
+    events: list[str] = []
+    injector = MacOSActiveAppTextInjector(
+        clipboard_injector=ClipboardTextInjector(
+            clipboard_writer=lambda text: events.append(f"clipboard:{text}")
+        ),
+        paste_trigger=RecordingPasteTrigger(events),
+        direct_typing_trigger=RecordingDirectTypingTrigger(events),
+        insertion_strategy="direct-type",
+        fallback_to_clipboard=True,
+        platform_name="darwin",
+    )
+
+    result = injector.inject("typed text")
+
+    assert result.inserted is True
+    assert result.method == "direct-type"
+    assert result.fallback_used is False
+    assert events == ["type:typed text"]
+
+
+def test_active_app_injector_direct_type_falls_back_to_clipboard_path() -> None:
+    """Verify direct-typing failures use clipboard+paste fallback when enabled.
+
+    Parameters:
+        None.
+
+    Returns:
+        None.
+
+    Raises:
+        AssertionError: If fallback behavior or reason code regresses.
+
+    Example:
+        ``pytest -k test_active_app_injector_direct_type_falls_back_to_clipboard_path``
+    """
+
+    events: list[str] = []
+    warning_stream = StringIO()
+    injector = MacOSActiveAppTextInjector(
+        clipboard_injector=ClipboardTextInjector(
+            clipboard_writer=lambda text: events.append(f"clipboard:{text}")
+        ),
+        paste_trigger=RecordingPasteTrigger(events),
+        direct_typing_trigger=FailingDirectTypingTrigger(),
+        insertion_strategy="direct-type",
+        fallback_to_clipboard=True,
+        warning_stream=warning_stream,
+        platform_name="darwin",
+    )
+
+    result = injector.inject("fallback typing text")
+
+    assert events == ["clipboard:fallback typing text", "paste"]
+    assert "direct typing failed" in warning_stream.getvalue().lower()
+    assert result.fallback_used is True
+    assert result.fallback_reason == "direct_typing_failed"
