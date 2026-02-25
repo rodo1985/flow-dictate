@@ -173,12 +173,22 @@ class DaemonEventWriter:
         self._stream.write(runtime_event.to_json_line() + "\n")
         self._stream.flush()
 
-    def emit_service_ready(self, backend: str, output_mode: str) -> None:
+    def emit_service_ready(
+        self,
+        backend: str,
+        output_mode: str,
+        hotkey: str,
+        insertion_strategy: str,
+        config_source: str,
+    ) -> None:
         """Emit daemon startup readiness event.
 
         Parameters:
             backend: Selected transcription backend.
             output_mode: Selected output mode.
+            hotkey: Effective hotkey expression used by the worker.
+            insertion_strategy: Effective active-app insertion strategy.
+            config_source: Human-readable source marker for runtime config values.
 
         Returns:
             None.
@@ -187,7 +197,7 @@ class DaemonEventWriter:
             None.
 
         Example:
-            ``writer.emit_service_ready(backend="api", output_mode="active-app")``
+            ``writer.emit_service_ready(backend="api", output_mode="active-app", hotkey="cmd+shift+space", insertion_strategy="direct-type", config_source="app-settings")``
         """
 
         self.emit(
@@ -195,6 +205,9 @@ class DaemonEventWriter:
             payload={
                 "backend": backend,
                 "output_mode": output_mode,
+                "hotkey": hotkey,
+                "insertion_strategy": insertion_strategy,
+                "config_source": config_source,
             },
         )
 

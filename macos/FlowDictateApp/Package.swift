@@ -16,5 +16,9 @@ let package = Package(
         .executableTarget(
             name: "FlowDictateApp"
         ),
+        .testTarget(
+            name: "FlowDictateAppTests",
+            dependencies: ["FlowDictateApp"]
+        ),
     ]
 )

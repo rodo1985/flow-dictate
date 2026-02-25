@@ -12,6 +12,16 @@ Deliver a team-alpha macOS menu-bar experience that runs dictation in the backgr
   - launch-at-login opt-in
   - worker process supervision
 
+## Runtime configuration policy (updated)
+- App runtime is now app-managed for reliability:
+  - backend forced to `api`
+  - output mode forced to `active-app`
+  - insertion strategy forced to `direct-type`
+  - hotkey sourced from app settings (validated)
+  - OpenAI API key sourced from Keychain
+- CLI runtime remains `.env`-driven and backward-compatible.
+- One-time migration imports `OPENAI_API_KEY` and `FLOW_DICTATE_HOTKEY` from `.env` into app settings when missing.
+
 ## Implemented components
 
 ## Python daemon track
@@ -58,10 +68,15 @@ Deliver a team-alpha macOS menu-bar experience that runs dictation in the backgr
   - pulls permission report from `doctor --json`
   - supports launch-at-login opt-in
   - links to macOS Privacy settings
+- Added minimal settings window:
+  - save/clear OpenAI API key in Keychain (`ai.flowdictate.desktop` / `OPENAI_API_KEY`)
+  - save validated app-managed hotkey
+  - display forced app runtime badges (`api`, `active-app`)
 - Added worker manager:
   - starts daemon with explicit cwd/env
   - parses daemon JSONL stream
   - restart with capped exponential-style backoff
+  - writes app/worker diagnostics to `~/Library/Logs/FlowDictate/flow-dictate-app.log`
 
 ## Install track (team-alpha)
 - Added installer script:
@@ -101,6 +116,7 @@ open /Applications/FlowDictate.app
 Notes:
 - Setup opens automatically if required permissions are missing.
 - `scripts/uninstall_team_alpha_macos.sh` removes the app bundle, stops stale app/daemon processes, and clears saved app preferences for a clean reinstall.
+- Menu includes `Open Logs` for quick debugging access.
 
 ## Acceptance checklist
 - [x] Team-alpha installer and uninstaller scripts exist.

@@ -25,19 +25,52 @@ struct OnboardingView: View {
                 }
             }
 
+            if appState.isDoctorReportLoading {
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text("Refreshing permission status...")
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Toggle("Launch at login", isOn: $launchAtLoginOptIn)
                 .onChange(of: launchAtLoginOptIn) { value in
                     appState.setLaunchAtLogin(value)
                 }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("App Settings")
+                    .font(.body.weight(.medium))
+                Text(
+                    appState.settingsHasAPIKey
+                        ? "OpenAI API key is configured in Keychain."
+                        : "OpenAI API key is missing. Add it in Settings."
+                )
+                .font(.caption)
+                .foregroundStyle(appState.settingsHasAPIKey ? .green : .orange)
+                Text("Hotkey: \(appState.settingsHotkeyExpression)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if let blockedMessage = appState.workerStartBlockedMessage {
+                    Text("Worker blocked: \(blockedMessage)")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            }
 
             HStack {
                 Button("Open Privacy Settings") {
                     appState.openPermissionsGuide()
                 }
 
-                Button("Request Permissions") {
-                    appState.loadDoctorReport(promptPermissions: true)
+                Button("Open Settings") {
+                    appState.openSettingsWindow()
                 }
+
+                Button(appState.isDoctorReportLoading ? "Requesting..." : "Request Permissions") {
+                    appState.requestPermissionsFromSystem()
+                }
+                .disabled(appState.isDoctorReportLoading)
 
                 Spacer()
 
@@ -46,29 +79,48 @@ struct OnboardingView: View {
                 }
                 .keyboardShortcut(.defaultAction)
             }
+
+            Text(
+                "Use 'Request Permissions' to jump to the next missing permission page, "
+                    + "or use the direct buttons below."
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
         }
         .padding(20)
         .frame(minWidth: 520, minHeight: 340)
         .onAppear {
             launchAtLoginOptIn = appState.launchAtLoginEnabled
-            // Setup should proactively request prompts when available so users can
-            // complete onboarding without running CLI commands.
-            appState.loadDoctorReport(promptPermissions: true)
+            appState.loadDoctorReport()
         }
     }
 
     @ViewBuilder
     private func permissionList(report: DoctorReport) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            PermissionRow(check: report.microphone)
-            PermissionRow(check: report.accessibility)
-            PermissionRow(check: report.inputMonitoring)
+            PermissionRow(
+                check: report.microphone,
+                actionLabel: "Open Microphone",
+                action: appState.openMicrophonePermissions
+            )
+            PermissionRow(
+                check: report.accessibility,
+                actionLabel: "Open Accessibility",
+                action: appState.openAccessibilityPermissions
+            )
+            PermissionRow(
+                check: report.inputMonitoring,
+                actionLabel: "Open Input Monitoring",
+                action: appState.openInputMonitoringPermissions
+            )
         }
     }
 }
 
 private struct PermissionRow: View {
     let check: DoctorPermissionCheck
+    let actionLabel: String
+    let action: () -> Void
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -88,6 +140,15 @@ private struct PermissionRow: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+            }
+
+            Spacer(minLength: 12)
+            if !check.granted {
+                Button(actionLabel) {
+                    action()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
             }
         }
         .padding(.vertical, 2)

@@ -134,6 +134,10 @@ Prerequisites:
 - Xcode Command Line Tools installed (`xcode-select --install`)
 - Swift toolchain available (`swift --version`)
 
+Note:
+- Installer captures the absolute `uv` path and injects it into the app launcher, so Finder launches can resolve `uv` reliably.
+- Installer writes `NSMicrophoneUsageDescription` into the app bundle so microphone permission prompts can be shown safely.
+
 Install:
 ```bash
 ./scripts/install_team_alpha_macos.sh
@@ -146,9 +150,45 @@ open /Applications/FlowDictate.app
 
 After launch:
 - Look for the Flow Dictate icon in the macOS menu bar (top-right).
-- Open the menu-bar icon to access `Open Setup`, worker controls, and `Launch at Login`.
+- Open the menu-bar icon to access `Open Setup`, `Open Settings`, worker controls, and `Launch at Login`.
 - Setup reopens automatically if required permissions are missing.
-- Use `Request Permissions` inside setup to trigger microphone/accessibility prompts.
+- Use `Request Permissions` inside setup to jump to the next missing permission page. When Microphone is missing, the app also triggers a direct microphone request.
+- Use direct setup buttons (`Open Microphone`, `Open Accessibility`, `Open Input Monitoring`) to jump to each exact privacy page.
+- Use `Open Logs` from the menu-bar app to inspect runtime diagnostics.
+
+## App Settings (macOS app mode)
+The macOS app now uses app-managed settings for deterministic startup:
+- API key source: Keychain (`service=ai.flowdictate.desktop`, `account=OPENAI_API_KEY`).
+- Hotkey source: app settings (`Open Settings` in menu bar), validated and canonicalized before worker launch.
+- Forced app runtime policy:
+  - `FLOW_DICTATE_BACKEND=api`
+  - `FLOW_DICTATE_OUTPUT_MODE=active-app`
+  - `FLOW_DICTATE_ACTIVE_APP_INSERTION_STRATEGY=direct-type`
+
+One-time migration on first app launch:
+- If Keychain API key is empty and `.env` contains `OPENAI_API_KEY`, the key is imported into Keychain.
+- If app hotkey is empty and `.env` contains a valid hotkey, it is imported.
+- If `.env` hotkey is modifier-only or invalid, app hotkey defaults to `cmd+shift+space`.
+- After migration, app settings do not sync back to `.env`.
+
+Important:
+- CLI behavior is unchanged and remains `.env`-driven.
+- App mode and CLI mode can run with different hotkeys and API key sources by design.
+
+Log file location:
+```bash
+~/Library/Logs/FlowDictate/flow-dictate-app.log
+```
+
+Live tail:
+```bash
+tail -f ~/Library/Logs/FlowDictate/flow-dictate-app.log
+```
+
+If logs show `env: uv: No such file or directory`, reinstall the app to refresh the launcher with your current `uv` path:
+```bash
+./scripts/install_team_alpha_macos.sh
+```
 
 Uninstall:
 ```bash
@@ -190,6 +230,17 @@ Additional supported variables:
 - `FLOW_DICTATE_ACTIVE_APP_FALLBACK_TO_CLIPBOARD` (default `true`)
 - `FLOW_DICTATE_TEMP_AUDIO_DIR` (default `/tmp/flow-dictate`)
 - `FLOW_DICTATE_DAEMON_POLL_INTERVAL_SECONDS` (default `0.10`)
+
+Troubleshooting: hotkey does nothing in app mode
+- Check app runtime summary in logs:
+```bash
+tail -f ~/Library/Logs/FlowDictate/flow-dictate-app.log
+```
+- Confirm you see:
+  - `Effective runtime config: backend=api output_mode=active-app ...`
+  - `Worker service_ready payload: backend=api output_mode=active-app ...`
+- If you see `Startup: OpenAI API key is required`, open `Open Settings` and save a key.
+- If hotkey is rejected, set a non-modifier expression (for example `cmd+shift+space`) in `Open Settings`.
 
 ## Project structure
 ```text

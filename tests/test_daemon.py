@@ -74,11 +74,18 @@ def test_daemon_event_writer_outputs_json_lines() -> None:
     stream = StringIO()
     writer = DaemonEventWriter(stream=stream)
 
-    writer.emit_service_ready(backend="stub", output_mode="stdout")
+    writer.emit_service_ready(
+        backend="stub",
+        output_mode="stdout",
+        hotkey="cmd+shift+space",
+        insertion_strategy="direct-type",
+        config_source="env",
+    )
 
     payload = json.loads(stream.getvalue().strip())
     assert payload["event"] == "service_ready"
     assert payload["payload"]["backend"] == "stub"
+    assert payload["payload"]["hotkey"] == "cmd+shift+space"
 
 
 def test_map_exception_to_error_code_returns_stable_values() -> None:

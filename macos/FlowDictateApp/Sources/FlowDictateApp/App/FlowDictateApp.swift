@@ -48,6 +48,10 @@ struct FlowDictateApp: App {
             )
         )
 
+        Button("Open Settings") {
+            appState.openSettingsWindow()
+        }
+
         Button(appState.showOnboarding ? "Open Setup (Required)" : "Open Setup") {
             appState.openSetupWindow()
         }
@@ -56,8 +60,18 @@ struct FlowDictateApp: App {
             appState.openPermissionsGuide()
         }
 
+        Button("Open Logs") {
+            appState.openLogsFolder()
+        }
+
         if let launchError = appState.launchAtLoginManager.lastErrorMessage {
             Text("Launch-at-login error: \(launchError)")
+                .font(.caption2)
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        if let blockedMessage = appState.workerStartBlockedMessage {
+            Text("Startup: \(blockedMessage)")
                 .font(.caption2)
                 .foregroundStyle(.orange)
                 .fixedSize(horizontal: false, vertical: true)

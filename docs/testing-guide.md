@@ -142,8 +142,22 @@ Expected behavior:
 - App opens as a menu-bar utility.
 - Flow Dictate icon is visible in the macOS menu bar.
 - Setup window can be opened from menu and auto-opens when required permissions are missing.
-- Setup includes a `Request Permissions` action that triggers available macOS prompts.
+- Settings window can be opened from menu (`Open Settings`).
+- Setup includes a `Request Permissions` action that opens the next missing permission pane.
+- Setup includes direct buttons for Microphone, Accessibility, and Input Monitoring panes.
+- When Microphone is missing, `Request Permissions` also triggers direct microphone access request from the app.
 - Starting worker surfaces lifecycle states in menu.
+
+## App settings workflow checks
+1. Open `Open Settings` from the menu bar.
+2. Save a valid hotkey and API key.
+3. Confirm worker restarts automatically.
+4. Clear API key and verify worker start is blocked with actionable error.
+
+Expected behavior:
+- App mode uses Keychain + app settings as runtime source for API key/hotkey.
+- App runtime is forced to backend `api` + output mode `active-app`.
+- Worker start is blocked when API key is missing.
 
 ## HUD smoke test
 - Enable `Show HUD` in menu.
@@ -153,7 +167,24 @@ Expected behavior:
 - HUD appears for recording and transcribing.
 - Success/error states auto-hide after configured timings.
 
+## App log smoke test
+- In the menu-bar app, click `Open Logs`.
+- Confirm log file exists at `~/Library/Logs/FlowDictate/flow-dictate-app.log`.
+- Trigger dictation once and verify new `worker event` lines appear.
+
+Expected log signatures:
+- Startup config:
+  - `Effective runtime config: backend=api output_mode=active-app insertion_strategy=direct-type hotkey=... key_present=true|false`
+- Worker launch summary:
+  - `Starting worker with cwd=... backend=api output_mode=active-app insertion_strategy=direct-type hotkey=... key_present=true`
+- Daemon ready payload:
+  - `Worker service_ready payload: backend=... output_mode=... insertion_strategy=... hotkey=... config_source=...`
+- Blocked startup:
+  - `Skipping worker start because required settings are missing/invalid: ...`
+
 ## 6) Useful failure signatures
 - `flow-dictate startup error: ... OPENAI_API_KEY ... required`: set API key or use `--backend stub`.
 - `Unable to start global hotkey listener`: run `flow-dictate doctor` and grant Input Monitoring.
 - `Active-app output is only supported on macOS`: expected when run outside macOS.
+- `env: uv: No such file or directory` in app logs: rerun `./scripts/install_team_alpha_macos.sh` so the launcher refreshes `FLOW_DICTATE_UV_BIN`.
+- App exits when requesting microphone permission: reinstall via `./scripts/install_team_alpha_macos.sh` to refresh app bundle privacy usage strings.

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import re
 import sys
@@ -744,6 +745,10 @@ def _run_daemon_command(args: argparse.Namespace) -> int:
         # Daemon mode is primarily consumed by external app shells, so we default to
         # active-app insertion unless explicitly overridden.
         selected_output_mode = args.output or "active-app"
+        selected_insertion_strategy = config.active_app_insertion_strategy
+        config_source = (
+            os.environ.get("FLOW_DICTATE_DAEMON_CONFIG_SOURCE", "env").strip() or "env"
+        )
         bridge = _DaemonRuntimeEventBridge(writer=writer)
         service = build_default_service(
             config=config,
@@ -766,6 +771,9 @@ def _run_daemon_command(args: argparse.Namespace) -> int:
     writer.emit_service_ready(
         backend=selected_backend,
         output_mode=selected_output_mode,
+        hotkey=config.hotkey,
+        insertion_strategy=selected_insertion_strategy,
+        config_source=config_source,
     )
 
     try:

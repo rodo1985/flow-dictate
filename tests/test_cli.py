@@ -307,6 +307,11 @@ def test_daemon_run_once_emits_service_and_lifecycle_events(
 
     assert exit_code == 0
     assert events[0]["event"] == "service_ready"
+    assert events[0]["payload"]["hotkey"]
+    assert events[0]["payload"]["backend"] == "stub"
+    assert events[0]["payload"]["output_mode"] == "active-app"
+    assert events[0]["payload"]["insertion_strategy"]
+    assert events[0]["payload"]["config_source"] == "env"
     assert events[1]["event"] == "recording_started"
     assert events[2]["event"] == "recording_stopped"
     assert events[3]["event"] == "transcribing_started"

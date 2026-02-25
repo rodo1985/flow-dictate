@@ -20,6 +20,7 @@ if ! command -v uv >/dev/null 2>&1; then
   echo "uv is required. Install with: brew install uv"
   exit 1
 fi
+UV_BIN_PATH="$(command -v uv)"
 
 if ! command -v swift >/dev/null 2>&1; then
   echo "Swift toolchain is required. Install Xcode Command Line Tools first."
@@ -81,6 +82,8 @@ cat > "${STAGING_CONTENTS_PATH}/Info.plist" <<PLIST
   <string>0.1.0</string>
   <key>LSMinimumSystemVersion</key>
   <string>13.0</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Flow Dictate needs microphone access to capture voice dictation.</string>
 </dict>
 </plist>
 PLIST
@@ -174,8 +177,9 @@ cat > "${STAGING_MACOS_PATH}/FlowDictateLauncher" <<LAUNCHER
 #!/usr/bin/env zsh
 set -euo pipefail
 
-export PATH="/opt/homebrew/bin:/usr/local/bin:\$PATH"
+export PATH="/opt/homebrew/bin:/usr/local/bin:\$HOME/.local/bin:\$PATH"
 export FLOW_DICTATE_REPO_ROOT="${REPO_ROOT}"
+export FLOW_DICTATE_UV_BIN="${UV_BIN_PATH}"
 exec "\$(cd "\$(dirname "\$0")" && pwd)/FlowDictateApp"
 LAUNCHER
 

@@ -71,6 +71,26 @@ struct WorkerRuntimeEvent: Decodable, Equatable {
         payload["reason"]?.stringValue
     }
 
+    var backend: String? {
+        payload["backend"]?.stringValue
+    }
+
+    var outputMode: String? {
+        payload["output_mode"]?.stringValue
+    }
+
+    var insertionStrategy: String? {
+        payload["insertion_strategy"]?.stringValue
+    }
+
+    var configSource: String? {
+        payload["config_source"]?.stringValue
+    }
+
+    var hotkey: String? {
+        payload["hotkey"]?.stringValue
+    }
+
     var errorCode: String? {
         payload["code"]?.stringValue
     }
