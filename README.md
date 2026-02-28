@@ -53,6 +53,11 @@ uv venv
 uv sync --group dev
 ```
 
+Optional shortcut for steps 2-3:
+```bash
+make setup
+```
+
 4. Create your local environment file:
 ```bash
 cp .env.example .env
@@ -64,6 +69,20 @@ uv run flow-dictate hotkey-setup
 ```
 
 ## How to run
+If you prefer `make` wrappers for common commands:
+```bash
+make help
+make run BACKEND=api OUTPUT=active-app
+make run-stub
+make daemon BACKEND=api OUTPUT=active-app
+make doctor-json
+make check
+make swift-build
+make swift-test
+```
+
+Equivalent direct `uv` / Swift commands are listed below.
+
 Show CLI help:
 ```bash
 uv run flow-dictate --help
@@ -141,11 +160,15 @@ Note:
 Install:
 ```bash
 ./scripts/install_team_alpha_macos.sh
+# or:
+make app-install
 ```
 
 Launch:
 ```bash
 open /Applications/FlowDictate.app
+# or:
+make app-open
 ```
 
 After launch:
@@ -193,6 +216,8 @@ If logs show `env: uv: No such file or directory`, reinstall the app to refresh 
 Uninstall:
 ```bash
 ./scripts/uninstall_team_alpha_macos.sh
+# or:
+make app-uninstall
 ```
 
 The uninstall script also stops stale app/daemon processes and clears saved app preferences, so reinstall behaves like a clean first run.
